@@ -38,3 +38,6 @@ wheels/
 
 # OS
 Thumbs.db
+
+# Project-specific
+setup_repo.py
