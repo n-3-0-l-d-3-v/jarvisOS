@@ -6,6 +6,7 @@ from jarvis.config import REPO_PATH, INDEX_PATH
 from jarvis.capture import list_pending, mark_processed, mark_failed
 from jarvis.classifier import classify_note
 from jarvis.formatter import format_note
+from jarvis.git_sync import sync, build_commit_message
 
 
 def _slugify_title(title):
@@ -89,8 +90,22 @@ def process_inbox():
                     f.write(markdown)
 
             _update_index(note_id, classification, timestamp)
+            
+            # Sync to GitHub
+            commit_msg = build_commit_message(classification, text)
+            sync_result = sync(commit_msg)
+            
             mark_processed(filepath)
             print(f"\u2713 Saved: {classification['folder_path']}/{filename}")
+            
+            # Print sync status
+            if sync_result.get("synced"):
+                print(f"  \u2191 Pushed to GitHub [{sync_result['commit_sha']}]")
+            elif sync_result.get("committed") and sync_result.get("push_error"):
+                print(f"  \u26a0 Committed but push failed: {sync_result['push_error']}")
+            elif sync_result.get("reason") == "nothing to commit":
+                print(f"  \u2014 Nothing new to push")
+            
             processed += 1
             results.append(
                 {
@@ -102,6 +117,9 @@ def process_inbox():
                     "classification": classification,
                     "filepath": str(target_file),
                     "success": True,
+                    "synced": sync_result.get("synced", False),
+                    "commit_sha": sync_result.get("commit_sha", ""),
+                    "push_error": sync_result.get("push_error", ""),
                 }
             )
         except Exception as exception:

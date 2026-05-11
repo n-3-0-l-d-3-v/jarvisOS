@@ -9,6 +9,7 @@ setup(
         "rich>=13.0.0",
         "python-dotenv>=1.0.0",
         "google-generativeai>=0.8.0",
+        "gitpython>=3.1.0",
     ],
     entry_points={
         "console_scripts": [

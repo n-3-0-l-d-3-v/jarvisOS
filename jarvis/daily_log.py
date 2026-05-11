@@ -7,6 +7,7 @@ from pathlib import Path
 import warnings
 
 from jarvis.config import REPO_PATH, DAILY_LOGS_PATH, GEMINI_API_KEY, INDEX_PATH
+from jarvis.git_sync import sync
 
 try:
     with warnings.catch_warnings():
@@ -370,6 +371,15 @@ def finalize_log(target_date=None):
     else:
         log_content = _replace_section_block(log_content, "## Key Learnings", "## Tomorrow", key_learnings)
     log_path.write_text(log_content, encoding="utf-8")
+    
+    # Sync to GitHub
+    commit_msg = f"log: finalize daily log {log_date.isoformat()}"
+    sync_result = sync(commit_msg)
+    if sync_result.get("synced"):
+        print(f"✓ Log synced to GitHub [{sync_result['commit_sha']}]")
+    elif sync_result.get("committed") and sync_result.get("push_error"):
+        print(f"⚠ Log committed but push failed: {sync_result['push_error']}")
+    
     return f"✓ Log finalized for {log_date.isoformat()}"
 
 
@@ -429,4 +439,13 @@ Logs:
     summary_path = REPO_PATH / "weekly-summaries" / f"{end_date.year}-W{week_number:02d}.md"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(summary_text, encoding="utf-8")
+    
+    # Sync to GitHub
+    commit_msg = f"log: weekly summary {end_date.year}-W{week_number:02d}"
+    sync_result = sync(commit_msg)
+    if sync_result.get("synced"):
+        print(f"✓ Weekly summary synced to GitHub [{sync_result['commit_sha']}]")
+    elif sync_result.get("committed") and sync_result.get("push_error"):
+        print(f"⚠ Weekly summary committed but push failed: {sync_result['push_error']}")
+    
     return summary_path

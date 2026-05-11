@@ -25,6 +25,7 @@ from .daily_log import (
 )
 from .processor import process_inbox
 from .scheduler import setup_scheduler
+from .git_sync import sync, get_status
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -210,8 +211,47 @@ def status():
     pending = len(list(INBOX_RAW.glob("*.json")))
     processed = len(list(INBOX_PROCESSED.glob("*.json")))
     failed = len(list(INBOX_FAILED.glob("*.json")))
-    body = f"Repo: {REPO_PATH}\nTotal notes: {total_notes}\nPending: {pending}\nProcessed: {processed}\nFailed: {failed}"
+    
+    # Get git status
+    git_info = ""
+    try:
+        git_status = get_status()
+        branch = git_status.get("branch", "unknown")
+        ahead = git_status.get("ahead", 0)
+        git_info = f"\nBranch: {branch} | Ahead: {ahead} commits"
+    except Exception:
+        git_info = "\nGit: not initialized"
+    
+    body = f"Repo: {REPO_PATH}\nTotal notes: {total_notes}\nPending: {pending}\nProcessed: {processed}\nFailed: {failed}{git_info}"
     console.print(Panel(body, title="Jarvis Status", border_style="blue"))
+
+
+@cli.command(name="sync")
+def sync_cmd():
+    """Sync notes to GitHub."""
+    try:
+        # Show current status
+        git_status = get_status()
+        branch = git_status.get("branch", "unknown")
+        modified = len(git_status.get("modified", []))
+        untracked = len(git_status.get("untracked", []))
+        
+        status_info = f"Branch: {branch} | Modified: {modified} files | Untracked: {untracked} files"
+        console.print(Panel(status_info, title="Git Status", border_style="cyan"))
+        
+        # Perform sync
+        sync_result = sync()
+        
+        if sync_result.get("synced"):
+            body = f"Commit: {sync_result['commit_sha']}\nMessage: {sync_result['commit_message']}\nRemote: {git_status['branch']}"
+            console.print(Panel(body, title="✓ Synced to GitHub", border_style="green"))
+        elif sync_result.get("committed") and sync_result.get("push_error"):
+            body = f"Error: {sync_result['push_error']}\nRun 'jar sync' again to retry pushing."
+            console.print(Panel(body, title="⚠ Committed, push failed", border_style="yellow"))
+        else:
+            console.print(Panel("Already up to date. Nothing to push.", title="— Nothing new", border_style="dim"))
+    except Exception as e:
+        console.print(Panel(f"Error: {str(e)}", title="✗ Sync failed", border_style="red"))
 
 
 @cli.command()
