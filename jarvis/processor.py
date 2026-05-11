@@ -56,8 +56,11 @@ def _update_index(note_id, classification, timestamp):
 def process_inbox():
     processed = 0
     failed = 0
+    results = []
 
     for filepath in list_pending():
+        payload = {}
+        classification = None
         try:
             with open(filepath, encoding="utf-8") as f:
                 payload = json.load(f)
@@ -67,6 +70,7 @@ def process_inbox():
             source_url = payload.get("source_url", "")
             timestamp = payload.get("timestamp", datetime.now().isoformat())
             note_id = payload.get("id", "")
+            note_type = payload.get("type", "")
 
             print(f"Processing: {text[:50]}...")
             classification = classify_note(text, source, source_url)
@@ -88,6 +92,18 @@ def process_inbox():
             mark_processed(filepath)
             print(f"\u2713 Saved: {classification['folder_path']}/{filename}")
             processed += 1
+            results.append(
+                {
+                    "text": text,
+                    "source": source,
+                    "source_url": source_url,
+                    "timestamp": timestamp,
+                    "note_type": classification.get("type", note_type),
+                    "classification": classification,
+                    "filepath": str(target_file),
+                    "success": True,
+                }
+            )
         except Exception as exception:
             print(f"\u2717 Failed: {str(exception)}")
             try:
@@ -95,5 +111,18 @@ def process_inbox():
             except Exception:
                 pass
             failed += 1
+            results.append(
+                {
+                    "text": payload.get("text", "") if "payload" in locals() else "",
+                    "source": payload.get("source", "") if "payload" in locals() else "",
+                    "source_url": payload.get("source_url", "") if "payload" in locals() else "",
+                    "timestamp": payload.get("timestamp", "") if "payload" in locals() else "",
+                    "note_type": payload.get("type", "") if "payload" in locals() else "",
+                    "classification": classification if "classification" in locals() else None,
+                    "filepath": str(filepath),
+                    "success": False,
+                    "error": str(exception),
+                }
+            )
 
-    return {"processed": processed, "failed": failed}
+    return {"processed": processed, "failed": failed, "results": results}

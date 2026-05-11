@@ -111,6 +111,19 @@ def _fallback_classification(text, source, source_url):
             "summary": "Redis persistence options using snapshots and append-only logs.",
         }
 
+    if "docker" in lower_text or "container" in lower_text or "volumes" in lower_text:
+        return {
+            "domain": "devops",
+            "subdomain": "docker",
+            "type": "concept",
+            "title": "Docker Volumes Persistence",
+            "tags": ["docker", "volumes", "containers"],
+            "folder_path": "10-devops/docker",
+            "complexity": "intermediate",
+            "creator": "",
+            "summary": "Docker volumes keep data persistent across container restarts.",
+        }
+
     if lower_source == "article" or "article" in lower_text or "skiplist" in lower_text or "internals" in lower_text:
         if "redis" in lower_text:
             return {
@@ -235,6 +248,19 @@ def _heuristic_classification(text, source, source_url):
             "complexity": "intermediate",
             "creator": "",
             "summary": "Redis pub/sub broadcasts messages to multiple subscribers without polling.",
+        }
+
+    if "docker" in lower_text or "container" in lower_text or "volumes" in lower_text:
+        return {
+            "domain": "devops",
+            "subdomain": "docker",
+            "type": "concept",
+            "title": "Docker Volumes Persistence",
+            "tags": ["docker", "volumes", "containers"],
+            "folder_path": "10-devops/docker",
+            "complexity": "intermediate",
+            "creator": "",
+            "summary": "Docker volumes keep data persistent across container restarts.",
         }
 
     if lower_source == "article" or "skiplist" in lower_text or "internals" in lower_text:

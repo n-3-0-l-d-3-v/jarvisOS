@@ -1,5 +1,5 @@
 import json
-from pathlib import Path
+import re
 import datetime
 import sys
 
@@ -16,7 +16,15 @@ from .config import (
     DAILY_LOGS_PATH,
 )
 from .capture import capture_note, list_pending
+from .daily_log import (
+    append_to_log,
+    finalize_log,
+    generate_weekly_summary,
+    get_log_path,
+    update_technologies,
+)
 from .processor import process_inbox
+from .scheduler import setup_scheduler
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -26,20 +34,37 @@ if hasattr(sys.stderr, "reconfigure"):
 console = Console()
 
 
-def _append_to_daily_log(text, source, url):
-    today = datetime.date.today()
-    dirp = DAILY_LOGS_PATH / str(today.year) / f"{today:%m}"
-    dirp.mkdir(parents=True, exist_ok=True)
-    filep = dirp / f"{today:%Y-%m-%d}.md"
-    if not filep.exists():
-        filep.write_text(f"# {today:%Y-%m-%d}\n\n## Captured Notes\n\n", encoding="utf-8")
-    t = datetime.datetime.now().strftime("%H:%M")
-    line = f"- `{t}` [{source}] {text}"
-    if url:
-        line += f" — [{url}]({url})"
-    line += "\n"
-    with open(filep, "a", encoding="utf-8") as f:
-        f.write(line)
+def _parse_date_value(date_value):
+    if not date_value:
+        return datetime.date.today()
+    try:
+        return datetime.date.fromisoformat(date_value)
+    except Exception as exception:
+        raise click.BadParameter("Date must be in YYYY-MM-DD format") from exception
+
+
+def _extract_summary_from_log(content):
+    marker = "## Summary"
+    next_marker = "## Captured Notes"
+    if marker not in content:
+        return ""
+    start = content.index(marker) + len(marker)
+    remainder = content[start:]
+    if next_marker in remainder:
+        summary_block = remainder.split(next_marker, 1)[0]
+    else:
+        summary_block = remainder
+    lines = [line.strip() for line in summary_block.splitlines() if line.strip()]
+    return "\n".join(lines)
+
+
+def _collect_latest_result(results, text, source, source_url):
+    for result in reversed(results):
+        if not result.get("success"):
+            continue
+        if result.get("text") == text and result.get("source") == source and result.get("source_url") == source_url:
+            return result
+    return None
 
 
 @click.group()
@@ -60,9 +85,15 @@ def note(text, source, url):
     path = capture_note(text, source=source, source_url=url)
     body = f":white_heavy_check_mark:  {text}\n\nSource: {source}  Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\nFile: {path}"
     console.print(Panel(body, title="Jarvis", border_style="green"))
-    _append_to_daily_log(text, source, url)
     console.print("[dim]Processing...[/dim]")
-    process_inbox()
+    results = process_inbox()
+    latest = _collect_latest_result(results.get("results", []), text, source, url)
+    if latest and latest.get("classification"):
+        timestamp = latest.get("timestamp")
+        target_date = datetime.date.fromisoformat(timestamp[:10]) if timestamp else datetime.date.today()
+        note_type = latest.get("note_type") or latest["classification"].get("type", "concept")
+        append_to_log(text, source, url, note_type, latest["classification"], target_date=target_date)
+        update_technologies(latest["classification"], target_date=target_date)
     console.print("[dim]✓ Done[/dim]")
 
 
@@ -76,6 +107,72 @@ def process():
     console.print(Panel(f"Found {len(files)} pending note(s)", title="Jarvis Processing", border_style="green"))
     result = process_inbox()
     console.print(f"Processed: {result['processed']} | Failed: {result['failed']}")
+
+
+@cli.command()
+@click.option("--date", "date_value", default=None, help="Date in YYYY-MM-DD format")
+def log(date_value):
+    """Show a daily log file."""
+    log_date = _parse_date_value(date_value)
+    log_path = get_log_path(log_date)
+    if not log_path.exists():
+        console.print(f"No log found for {log_date.isoformat()}")
+        return
+    console.print(log_path.read_text(encoding="utf-8"))
+
+
+@cli.command()
+@click.option("--date", "date_value", default=None, help="Date in YYYY-MM-DD format")
+def finalize(date_value):
+    """Finalize a daily log with an AI summary."""
+    log_date = _parse_date_value(date_value)
+    log_path = get_log_path(log_date)
+    result = finalize_log(log_date)
+    if result.startswith("No log found"):
+        console.print(result)
+        return
+    summary = _extract_summary_from_log(log_path.read_text(encoding="utf-8"))
+    body = f"{summary}\n\nSaved to: {log_path}"
+    console.print(Panel(body, title="Jarvis — Log Finalized", border_style="green"))
+
+
+@cli.command()
+def weekly():
+    """Generate a weekly summary from the last seven daily logs."""
+    summary_path = generate_weekly_summary()
+    preview = summary_path.read_text(encoding="utf-8")[:500]
+    body = f"Saved to: {summary_path}\n\n{preview}"
+    console.print(Panel(body, title="Jarvis — Weekly Summary", border_style="blue"))
+
+
+@cli.command()
+def logs():
+    """List all daily logs grouped by month."""
+    log_files = [
+        path
+        for path in DAILY_LOGS_PATH.rglob("*.md")
+        if re.match(r"^\d{4}-\d{2}-\d{2}\.md$", path.name)
+    ]
+    if not log_files:
+        console.print("No daily logs found.")
+        return
+
+    grouped = {}
+    for path in log_files:
+        month_key = f"{path.parent.parent.name}/{path.parent.name}"
+        grouped.setdefault(month_key, 0)
+        grouped[month_key] += 1
+
+    for month_key in sorted(grouped):
+        console.print(f"{month_key}: {grouped[month_key]} logs")
+    console.print(f"Total logs: {len(log_files)}")
+
+
+@cli.command()
+def schedule():
+    """Set up the midnight log finalizer task."""
+    message = setup_scheduler()
+    console.print(Panel(message, title="Jarvis — Scheduler", border_style="green" if "Failed" not in message else "red"))
 
 
 @cli.command()
@@ -121,7 +218,7 @@ def status():
 def today():
     """Show today's daily log."""
     today = datetime.date.today()
-    filep = DAILY_LOGS_PATH / str(today.year) / f"{today:%m}" / f"{today:%Y-%m-%d}.md"
+    filep = get_log_path(today)
     if not filep.exists():
         console.print("No log for today yet. Capture your first note.")
         return
