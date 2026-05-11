@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import datetime
+import sys
 
 import click
 from rich.console import Console
@@ -15,6 +16,12 @@ from .config import (
     DAILY_LOGS_PATH,
 )
 from .capture import capture_note, list_pending
+from .processor import process_inbox
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 console = Console()
 
@@ -54,6 +61,21 @@ def note(text, source, url):
     body = f":white_heavy_check_mark:  {text}\n\nSource: {source}  Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\nFile: {path}"
     console.print(Panel(body, title="Jarvis", border_style="green"))
     _append_to_daily_log(text, source, url)
+    console.print("[dim]Processing...[/dim]")
+    process_inbox()
+    console.print("[dim]✓ Done[/dim]")
+
+
+@cli.command()
+def process():
+    """Process pending notes from the inbox."""
+    files = list_pending()
+    if not files:
+        console.print("Inbox is empty — nothing to process.")
+        return
+    console.print(Panel(f"Found {len(files)} pending note(s)", title="Jarvis Processing", border_style="green"))
+    result = process_inbox()
+    console.print(f"Processed: {result['processed']} | Failed: {result['failed']}")
 
 
 @cli.command()
