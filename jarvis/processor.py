@@ -4,7 +4,8 @@ from datetime import datetime
 
 from jarvis.config import REPO_PATH, INDEX_PATH
 from jarvis.capture import list_pending, mark_processed, mark_failed
-from jarvis.classifier import classify_note, format_note
+from jarvis.classifier import classify_note
+from jarvis.formatter import format_note
 
 
 def _slugify_title(title):
