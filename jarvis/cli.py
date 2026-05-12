@@ -27,6 +27,7 @@ from .processor import process_inbox
 from .scheduler import setup_scheduler
 from .git_sync import sync, get_status
 from .classifier import reclassify_unsorted
+from .index_cleaner import clean_index
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -282,6 +283,24 @@ def cleanup_cmd():
         console.print(Panel("Cleanup complete.", title="Jarvis Cleanup", border_style="blue"))
 
 
+@cli.command(name="index-clean")
+def index_clean_cmd():
+    """Remove stale index entries where files no longer exist."""
+    console.print("[dim]Scanning index for stale entries...[/dim]")
+    result = clean_index()
+    sync_result = sync("fix: remove stale entries from index.json")
+    console.print(
+        Panel(
+            f"Removed  : {result['removed']} stale entries\n"
+            f"Remaining: {result['remaining']} valid entries\n"
+            f"GitHub   : {'pushed' if sync_result.get('synced') else 'up to date'}",
+            title="[bold]Jarvis — Index Cleanup[/bold]",
+            border_style="green",
+            width=50,
+        )
+    )
+
+
 @cli.command(name="dsa")
 @click.option("--pattern", "pattern_filter", default="", help="Filter by DSA pattern")
 def dsa_cmd(pattern_filter):
@@ -317,6 +336,84 @@ def dsa_cmd(pattern_filter):
             console.print(f"  {problem_number:<6} {title:<28} {difficulty:<7} {date}")
 
     console.print(f"Total DSA notes: {len(dsa_notes)}")
+
+
+@cli.command()
+@click.option("--domain", "-d", default=None, help="Only link notes in this domain")
+def link(domain):
+    """Add [[wikilinks]] to Related Topics sections across all notes."""
+    console.print("[dim]Running cross-linker...[/dim]")
+
+    from jarvis.git_sync import sync
+    from jarvis.linker import load_index, run_linker
+
+    all_notes = load_index()
+    if domain:
+        target = [note for note in all_notes if note.get("domain") == domain]
+        console.print(f"[dim]Linking {len(target)} notes in domain: {domain}[/dim]")
+    else:
+        target = None
+        console.print(f"[dim]Linking all {len(all_notes)} notes...[/dim]")
+
+    result = run_linker(notes_to_link=target, verbose=True)
+    sync_result = sync("feat: add wikilinks to related topics sections")
+
+    console.print(
+        Panel(
+            f"Linked  : {result['linked']} notes\n"
+            f"Skipped : {result['skipped']} notes\n"
+            f"GitHub  : {'pushed' if sync_result.get('synced') else 'not pushed'}",
+            title="[bold]Jarvis — Cross-Linker[/bold]",
+            border_style="cyan",
+            width=50,
+        )
+    )
+
+
+@cli.command()
+@click.argument("search_term")
+def graph(search_term):
+    """Show related notes for a given search term."""
+    from jarvis.linker import find_related_notes, load_index
+
+    all_notes = load_index()
+    search_lower = search_term.lower()
+    matches = [
+        note
+        for note in all_notes
+        if search_lower in note.get("title", "").lower()
+        or search_lower in " ".join(note.get("tags", [])).lower()
+        or search_lower in note.get("subdomain", "").lower()
+    ]
+
+    if not matches:
+        console.print(f"[dim]No notes found matching '{search_term}'[/dim]")
+        return
+
+    def _match_rank(entry):
+        title = entry.get("title", "").lower()
+        is_dsa = entry.get("type") == "dsa"
+        exact = title == search_lower
+        contains = search_lower in title
+        return (is_dsa, exact, contains, len(title))
+
+    matches.sort(key=_match_rank, reverse=True)
+    note = matches[0]
+    related = find_related_notes(note, all_notes, max_results=8)
+
+    console.print(f"\n[bold]{note['title']}[/bold] [{note['domain']}]\n")
+
+    if not related:
+        console.print("[dim]No related notes found yet.[/dim]")
+        return
+
+    console.print("[bold]Related notes:[/bold]")
+    for related_note in related:
+        score_bar = "█" * min(related_note.get("score", 0), 8)
+        console.print(
+            f"  {score_bar} [dim]{related_note.get('score', 0)}pt[/dim]  "
+            f"{related_note.get('title', '?')} [{related_note.get('domain', '?')}]"
+        )
 
 
 @cli.command()

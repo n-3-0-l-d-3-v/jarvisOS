@@ -11,6 +11,7 @@ from jarvis.config import INDEX_PATH, REPO_PATH
 from jarvis.dsa_agent import analyze_dsa_note, build_dsa_note
 from jarvis.formatter import format_note
 from jarvis.leetcode_fetcher import enrich_note_with_leetcode
+from jarvis.linker import run_linker, run_linker_for_new_notes, should_run_full_link
 
 
 def _slugify_title(title: str) -> str:
@@ -221,6 +222,7 @@ def process_single_note(inbox_file_path: Path, force=False):
         print(f"  [Orchestrator] Total: {time.time() - total_start:.1f}s")
         return {
             "success": True,
+            "id": note_id,
             "text": text,
             "classification": classification,
             "enriched_data": enriched_data,
@@ -232,6 +234,7 @@ def process_single_note(inbox_file_path: Path, force=False):
         print(f"  Failed: {str(exc)}")
         return {
             "success": False,
+            "id": payload.get("id", "") if "payload" in locals() else "",
             "text": payload.get("text", "") if "payload" in locals() else "",
             "classification": None,
             "enriched_data": None,
@@ -274,5 +277,24 @@ def process_inbox_orchestrated(force=False):
                 mark_failed(inbox_file, result.get("error", "unknown"))
 
         results.append(result)
+
+    successful_results = [result for result in results if result.get("success")]
+    if successful_results:
+        new_ids = {result.get("id", "") for result in successful_results if result.get("id")}
+        try:
+            index_data = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+            all_notes = index_data.get("notes", [])
+        except Exception:
+            all_notes = []
+
+        new_entries = [note for note in all_notes if note.get("id") in new_ids]
+        if new_entries:
+            print(f"\n  [Linker] Linking {len(new_entries)} new notes...")
+            run_linker_for_new_notes(new_entries)
+
+        if should_run_full_link():
+            print("  [Linker] Running full repo link pass (every 10 notes)...")
+            run_linker(verbose=False)
+            print("  [Linker] Full link pass complete")
 
     return {"processed": processed, "failed": failed, "results": results}
