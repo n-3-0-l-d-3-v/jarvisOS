@@ -320,6 +320,34 @@ def dsa_cmd(pattern_filter):
 
 
 @cli.command()
+@click.argument("number", type=int)
+def lc(number):
+    """Fetch and preview a LeetCode problem by number."""
+    console.print(f"Fetching LC-{number}...")
+
+    from jarvis.leetcode_fetcher import fetch_problem
+
+    data = fetch_problem(number)
+    if not data:
+        console.print("[red]Could not fetch problem. Check connection.[/red]")
+        return
+
+    console.print(
+        Panel(
+            f"[bold]{data['problem_number']}. {data['title']}[/bold]\n\n"
+            f"Difficulty : {data['difficulty']}\n"
+            f"Tags       : {', '.join(data['tags'][:5])}\n"
+            f"Companies  : {', '.join(data['companies'][:5]) or 'Not available'}\n"
+            f"URL        : {data['url']}\n\n"
+            f"[dim]{data['problem_summary'][:300]}...[/dim]",
+            title="LeetCode Problem",
+            border_style="yellow",
+            width=70,
+        )
+    )
+
+
+@cli.command()
 def today():
     """Show today's daily log."""
     today = datetime.date.today()

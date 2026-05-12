@@ -7,6 +7,7 @@ from jarvis.capture import list_pending, mark_processed, mark_failed
 from jarvis.classifier import classify_note
 from jarvis.formatter import format_note
 from jarvis.dsa_agent import analyze_dsa_note, build_dsa_note
+from jarvis.leetcode_fetcher import enrich_note_with_leetcode
 from jarvis.git_sync import sync, build_commit_message
 
 
@@ -60,6 +61,10 @@ def _update_index(note_id, classification, timestamp, filename, source, enriched
         entry["difficulty"] = enriched_data.get("difficulty", "")
         entry["pattern"] = enriched_data.get("pattern", "")
         entry["companies"] = enriched_data.get("companies", [])
+    if "lc_difficulty" in classification:
+        entry["lc_difficulty"] = classification.get("lc_difficulty", "")
+    if "lc_companies" in classification:
+        entry["lc_companies"] = classification.get("lc_companies", [])
     index_data["notes"].append(entry)
     index_data["total_notes"] = int(index_data.get("total_notes", 0)) + 1
     _save_index(index_data)
@@ -88,15 +93,27 @@ def process_inbox(force=False):
             print(f"Processing: {text[:50]}...")
             classification = classify_note(text, source, source_url)
 
+            leetcode_data = None
+            if classification.get("type") == "dsa" or source == "leetcode":
+                leetcode_data = enrich_note_with_leetcode(text, classification)
+                if leetcode_data:
+                    if leetcode_data.get("difficulty"):
+                        classification["lc_difficulty"] = leetcode_data["difficulty"]
+                    if leetcode_data.get("tags"):
+                        existing_tags = classification.get("tags", [])
+                        lc_tags = [tag.lower() for tag in leetcode_data["tags"][:3]]
+                        classification["tags"] = list(set(existing_tags + lc_tags))[:6]
+                    classification["lc_companies"] = leetcode_data.get("companies", [])
+
             if classification.get("type") == "dsa" or source == "leetcode":
                 print("  [Jarvis] DSA note detected — activating specialist agent...")
-                enriched_data = analyze_dsa_note(text, classification)
+                enriched_data = analyze_dsa_note(text, classification, leetcode_data)
                 if enriched_data:
                     print(
                         "  [Jarvis] DSA Agent: enriched with pattern="
                         f"{enriched_data.get('pattern')} difficulty={enriched_data.get('difficulty')}"
                     )
-                    markdown = build_dsa_note(text, classification, enriched_data, timestamp)
+                    markdown = build_dsa_note(text, classification, enriched_data, timestamp, leetcode_data)
                 else:
                     print("  [Jarvis] DSA Agent unavailable — using standard formatter")
                     markdown = format_note(text, classification, source, source_url, timestamp)

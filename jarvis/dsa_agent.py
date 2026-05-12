@@ -42,7 +42,7 @@ def extract_json(text):
     return None
 
 
-def analyze_dsa_note(text, classification):
+def analyze_dsa_note(text, classification, leetcode_data=None):
     if not GROQ_API_KEY:
         print("  [Jarvis] DSA Agent: no Groq key, skipping enrichment")
         return None
@@ -77,6 +77,16 @@ Return this exact JSON:
   "mistakes_to_avoid": "common mistake developers make on this problem type"
 }}
 """
+    if leetcode_data:
+        lc_context = f"""
+Official LeetCode data:
+- Title: {leetcode_data.get('title', '')}
+- Difficulty: {leetcode_data.get('difficulty', '')}
+- Topic Tags: {', '.join(leetcode_data.get('tags', []))}
+- Companies: {', '.join(leetcode_data.get('companies', []))}
+- Problem: {leetcode_data.get('problem_summary', '')[:300]}
+"""
+        prompt = prompt + lc_context
 
     try:
         with httpx.Client(timeout=20.0) as client:
@@ -115,7 +125,7 @@ Return this exact JSON:
         return None
 
 
-def build_dsa_note(text, classification, enriched_data, timestamp):
+def build_dsa_note(text, classification, enriched_data, timestamp, leetcode_data=None):
     if not enriched_data:
         return format_dsa(text, classification, "leetcode", "", timestamp)
 
@@ -159,6 +169,12 @@ reviewed: false
 
 ## Pattern
 {pattern}
+
+## Problem Statement
+{leetcode_data['problem_summary'] if leetcode_data else '<!-- Add problem statement -->'}
+
+## LeetCode Link
+{leetcode_data['url'] if leetcode_data else '<!-- Add URL -->'}
 
 ## Difficulty
 {difficulty}
