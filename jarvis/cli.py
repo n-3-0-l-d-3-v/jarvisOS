@@ -26,6 +26,7 @@ from .daily_log import (
 from .processor import process_inbox
 from .scheduler import setup_scheduler
 from .git_sync import sync, get_status
+from .classifier import reclassify_unsorted
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -252,6 +253,19 @@ def sync_cmd():
             console.print(Panel("Already up to date. Nothing to push.", title="— Nothing new", border_style="dim"))
     except Exception as e:
         console.print(Panel(f"Error: {str(e)}", title="✗ Sync failed", border_style="red"))
+
+
+@cli.command(name="cleanup")
+def cleanup_cmd():
+    """Reclassify unsorted notes and sync changes."""
+    reclassify_unsorted()
+    sync_result = sync("fix: reclassify unsorted notes to correct folders")
+    if sync_result.get("synced"):
+        console.print(Panel("Cleanup complete and synced.", title="Jarvis Cleanup", border_style="green"))
+    elif sync_result.get("committed") and sync_result.get("push_error"):
+        console.print(Panel("Cleanup committed but push failed.", title="Jarvis Cleanup", border_style="yellow"))
+    else:
+        console.print(Panel("Cleanup complete.", title="Jarvis Cleanup", border_style="blue"))
 
 
 @cli.command()

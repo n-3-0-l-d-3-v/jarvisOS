@@ -36,18 +36,24 @@ def _save_index(index_data):
         json.dump(index_data, f, ensure_ascii=False, indent=2)
 
 
-def _update_index(note_id, classification, timestamp):
+def _update_index(note_id, classification, timestamp, filename, source):
     index_data = _load_index()
+    note_date = timestamp[:10] if timestamp else datetime.now().date().isoformat()
     index_data["notes"].append(
         {
             "id": note_id,
             "title": classification.get("title", "Untitled Note"),
             "domain": classification.get("domain", "knowledge-base"),
+            "subdomain": classification.get("subdomain", ""),
             "folder_path": classification.get("folder_path", "22-knowledge-base"),
-            "filename": f"{_slugify_title(classification.get('title', 'Untitled Note'))}.md",
-            "date": timestamp[:10] if timestamp else datetime.now().date().isoformat(),
+            "filename": filename,
+            "date": note_date,
             "tags": classification.get("tags", []),
             "type": classification.get("type", "concept"),
+            "source": source,
+            "confidence": classification.get("confidence", 0.5),
+            "dsa_pattern": classification.get("dsa_pattern", ""),
+            "classifier_used": classification.get("classifier_used", "gemini"),
         }
     )
     index_data["total_notes"] = int(index_data.get("total_notes", 0)) + 1
@@ -89,7 +95,7 @@ def process_inbox():
                 with open(target_file, "w", encoding="utf-8") as f:
                     f.write(markdown)
 
-            _update_index(note_id, classification, timestamp)
+            _update_index(note_id, classification, timestamp, filename, source)
             
             # Sync to GitHub
             commit_msg = build_commit_message(classification, text)
