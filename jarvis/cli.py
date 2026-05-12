@@ -82,13 +82,20 @@ def cli():
     type=click.Choice(["cli", "youtube", "article", "leetcode", "telegram"]),
 )
 @click.option("--url", default="")
-def note(text, source, url):
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    default=False,
+    help="Overwrite existing note if it already exists",
+)
+def note(text, source, url, force):
     """Capture a quick note to the inbox."""
     path = capture_note(text, source=source, source_url=url)
     body = f":white_heavy_check_mark:  {text}\n\nSource: {source}  Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\nFile: {path}"
     console.print(Panel(body, title="Jarvis", border_style="green"))
     console.print("[dim]Processing...[/dim]")
-    results = process_inbox()
+    results = process_inbox(force=force)
     latest = _collect_latest_result(results.get("results", []), text, source, url)
     if latest and latest.get("classification"):
         timestamp = latest.get("timestamp")
@@ -100,14 +107,21 @@ def note(text, source, url):
 
 
 @cli.command()
-def process():
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    default=False,
+    help="Overwrite existing note if it already exists",
+)
+def process(force):
     """Process pending notes from the inbox."""
     files = list_pending()
     if not files:
         console.print("Inbox is empty — nothing to process.")
         return
     console.print(Panel(f"Found {len(files)} pending note(s)", title="Jarvis Processing", border_style="green"))
-    result = process_inbox()
+    result = process_inbox(force=force)
     console.print(f"Processed: {result['processed']} | Failed: {result['failed']}")
 
 
@@ -266,6 +280,43 @@ def cleanup_cmd():
         console.print(Panel("Cleanup committed but push failed.", title="Jarvis Cleanup", border_style="yellow"))
     else:
         console.print(Panel("Cleanup complete.", title="Jarvis Cleanup", border_style="blue"))
+
+
+@cli.command(name="dsa")
+@click.option("--pattern", "pattern_filter", default="", help="Filter by DSA pattern")
+def dsa_cmd(pattern_filter):
+    """Show DSA notes grouped by pattern."""
+    try:
+        with open(INDEX_PATH, encoding="utf-8") as f:
+            idx = json.load(f)
+            notes = idx.get("notes", []) if isinstance(idx, dict) else []
+    except Exception:
+        notes = []
+
+    dsa_notes = [note for note in notes if note.get("type") == "dsa"]
+    if pattern_filter:
+        dsa_notes = [
+            note
+            for note in dsa_notes
+            if (note.get("pattern") or note.get("dsa_pattern", "")) == pattern_filter
+        ]
+
+    grouped = {}
+    for note in dsa_notes:
+        pattern = note.get("pattern") or note.get("dsa_pattern", "arrays")
+        grouped.setdefault(pattern, []).append(note)
+
+    for pattern in sorted(grouped):
+        items = grouped[pattern]
+        console.print(f"{pattern} ({len(items)} notes)")
+        for item in items:
+            problem_number = item.get("problem_number", "")
+            title = item.get("title", "Untitled")
+            difficulty = item.get("difficulty", "")
+            date = item.get("date", "")
+            console.print(f"  {problem_number:<6} {title:<28} {difficulty:<7} {date}")
+
+    console.print(f"Total DSA notes: {len(dsa_notes)}")
 
 
 @cli.command()

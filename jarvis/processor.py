@@ -6,6 +6,7 @@ from jarvis.config import REPO_PATH, INDEX_PATH
 from jarvis.capture import list_pending, mark_processed, mark_failed
 from jarvis.classifier import classify_note
 from jarvis.formatter import format_note
+from jarvis.dsa_agent import analyze_dsa_note, build_dsa_note
 from jarvis.git_sync import sync, build_commit_message
 
 
@@ -36,31 +37,35 @@ def _save_index(index_data):
         json.dump(index_data, f, ensure_ascii=False, indent=2)
 
 
-def _update_index(note_id, classification, timestamp, filename, source):
+def _update_index(note_id, classification, timestamp, filename, source, enriched_data=None):
     index_data = _load_index()
     note_date = timestamp[:10] if timestamp else datetime.now().date().isoformat()
-    index_data["notes"].append(
-        {
-            "id": note_id,
-            "title": classification.get("title", "Untitled Note"),
-            "domain": classification.get("domain", "knowledge-base"),
-            "subdomain": classification.get("subdomain", ""),
-            "folder_path": classification.get("folder_path", "22-knowledge-base"),
-            "filename": filename,
-            "date": note_date,
-            "tags": classification.get("tags", []),
-            "type": classification.get("type", "concept"),
-            "source": source,
-            "confidence": classification.get("confidence", 0.5),
-            "dsa_pattern": classification.get("dsa_pattern", ""),
-            "classifier_used": classification.get("classifier_used", "gemini"),
-        }
-    )
+    entry = {
+        "id": note_id,
+        "title": classification.get("title", "Untitled Note"),
+        "domain": classification.get("domain", "knowledge-base"),
+        "subdomain": classification.get("subdomain", ""),
+        "folder_path": classification.get("folder_path", "22-knowledge-base"),
+        "filename": filename,
+        "date": note_date,
+        "tags": classification.get("tags", []),
+        "type": classification.get("type", "concept"),
+        "source": source,
+        "confidence": classification.get("confidence", 0.5),
+        "dsa_pattern": classification.get("dsa_pattern", ""),
+        "classifier_used": classification.get("classifier_used", "gemini"),
+    }
+    if enriched_data:
+        entry["problem_number"] = enriched_data.get("problem_number", "")
+        entry["difficulty"] = enriched_data.get("difficulty", "")
+        entry["pattern"] = enriched_data.get("pattern", "")
+        entry["companies"] = enriched_data.get("companies", [])
+    index_data["notes"].append(entry)
     index_data["total_notes"] = int(index_data.get("total_notes", 0)) + 1
     _save_index(index_data)
 
 
-def process_inbox():
+def process_inbox(force=False):
     processed = 0
     failed = 0
     results = []
@@ -78,24 +83,69 @@ def process_inbox():
             timestamp = payload.get("timestamp", datetime.now().isoformat())
             note_id = payload.get("id", "")
             note_type = payload.get("type", "")
+            enriched_data = None
 
             print(f"Processing: {text[:50]}...")
             classification = classify_note(text, source, source_url)
-            markdown = format_note(text, classification, source, source_url, timestamp)
+
+            if classification.get("type") == "dsa" or source == "leetcode":
+                print("  [Jarvis] DSA note detected — activating specialist agent...")
+                enriched_data = analyze_dsa_note(text, classification)
+                if enriched_data:
+                    print(
+                        "  [Jarvis] DSA Agent: enriched with pattern="
+                        f"{enriched_data.get('pattern')} difficulty={enriched_data.get('difficulty')}"
+                    )
+                    markdown = build_dsa_note(text, classification, enriched_data, timestamp)
+                else:
+                    print("  [Jarvis] DSA Agent unavailable — using standard formatter")
+                    markdown = format_note(text, classification, source, source_url, timestamp)
+            else:
+                markdown = format_note(text, classification, source, source_url, timestamp)
 
             full_folder = REPO_PATH / classification["folder_path"]
             full_folder.mkdir(parents=True, exist_ok=True)
 
-            filename = f"{_slugify_title(classification.get('title', 'Untitled Note'))}.md"
+            filename = None
+            if classification.get("type") == "dsa":
+                problem_number = ""
+                if enriched_data:
+                    problem_number = enriched_data.get("problem_number", "")
+
+                if not problem_number:
+                    lc_match = re.search(r"LC-?(\d+)", text, re.IGNORECASE)
+                    if lc_match:
+                        problem_number = f"LC-{lc_match.group(1)}"
+
+                if problem_number:
+                    number_part = problem_number.lower().replace("-", "-")
+                    if enriched_data and enriched_data.get("problem_name"):
+                        name_part = enriched_data["problem_name"].lower()
+                    else:
+                        name_part = classification.get("title", "").lower()
+
+                    name_part = re.sub(r"^lc-?\d+\s*", "", name_part)
+                    name_part = re.sub(r"[^a-z0-9\s-]", "", name_part)
+                    name_part = name_part.strip().replace(" ", "-")
+                    name_part = re.sub(r"-+", "-", name_part)
+
+                    filename = f"{number_part}-{name_part}.md"
+
+            if not filename:
+                filename = f"{_slugify_title(classification.get('title', 'Untitled Note'))}.md"
             target_file = full_folder / filename
 
-            if target_file.exists():
-                print(f"Already exists: {filename}")
-            else:
-                with open(target_file, "w", encoding="utf-8") as f:
-                    f.write(markdown)
+            if target_file.exists() and not force:
+                print(f"  Already exists (use --force to overwrite): {filename}")
+                mark_processed(filepath)
+                continue
+            elif target_file.exists() and force:
+                print(f"  Force overwriting: {filename}")
 
-            _update_index(note_id, classification, timestamp, filename, source)
+            with open(target_file, "w", encoding="utf-8") as f:
+                f.write(markdown)
+
+            _update_index(note_id, classification, timestamp, filename, source, enriched_data)
             
             # Sync to GitHub
             commit_msg = build_commit_message(classification, text)
