@@ -402,6 +402,31 @@ def article_cmd(url, personal_note):
     )
 
 
+@cli.command(name="discord")
+def discord_cmd():
+    """Start the Jarvis Discord bot for mobile capture."""
+    from jarvis.discord_bot import run_bot
+    console.print(
+        Panel(
+            "Starting Jarvis Discord bot...\n\n"
+            "Message your bot in Discord to capture notes.\n"
+            "Press Ctrl+C to stop.\n\n"
+            "Commands in Discord:\n"
+            "  Any text    → saves as note\n"
+            "  YouTube URL → saves as video\n"
+            "  Article URL → saves as article\n"
+            "  !status     → show stats\n"
+            "  !today      → today's captures\n"
+            "  !dsa        → DSA progress\n"
+            "  !help       → show all commands",
+            title="[bold]Jarvis — Discord Bot[/bold]",
+            border_style="blue",
+            width=55,
+        )
+    )
+    run_bot()
+
+
 @cli.command(name="youtube")
 @click.argument("url")
 def youtube_cmd(url):

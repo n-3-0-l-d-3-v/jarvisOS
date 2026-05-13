@@ -2,8 +2,9 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 
-# Load .env from project root
-load_dotenv()
+# Load .env from project root (one level above this file)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env")
 
 REPO_PATH = Path(os.getenv("JARVIS_REPO_PATH", r"C:\Users\neilt\devNote"))
 
@@ -19,6 +20,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GROK_API_KEY = os.getenv("GROK_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
+DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "")
+DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID", "")
 
 # Ensure directories exist
 for p in (INBOX_RAW, INBOX_PROCESSED, INBOX_FAILED, META_PATH, DAILY_LOGS_PATH):

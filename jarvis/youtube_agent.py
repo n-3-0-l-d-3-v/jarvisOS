@@ -1,11 +1,34 @@
 import httpx
 import json
 import re
-from pathlib import Path
 from uuid import uuid4
 from datetime import datetime
 
 from jarvis.config import REPO_PATH, YOUTUBE_API_KEY, GROQ_API_KEY, INDEX_PATH
+
+
+def _fetch_oembed_metadata(video_id):
+    try:
+        url = "https://www.youtube.com/oembed"
+        params = {"url": f"https://www.youtube.com/watch?v={video_id}", "format": "json"}
+        resp = httpx.get(url, params=params, timeout=10)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        return {
+            "video_id": video_id,
+            "title": data.get("title", "Unknown"),
+            "channel": data.get("author_name", "Unknown"),
+            "description": "See video for details",
+            "published_at": "Unknown",
+            "tags": [],
+            "duration": "Unknown",
+            "view_count": "Unknown",
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "thumbnail": data.get("thumbnail_url", ""),
+        }
+    except Exception:
+        return None
 
 
 def extract_video_id(url):
@@ -28,26 +51,11 @@ def fetch_video_metadata(video_id):
     if not YOUTUBE_API_KEY:
         # Fallback: use oEmbed endpoint for basic metadata
         print("  [YouTube] No API key — fetching basic metadata only")
-        try:
-            url = "https://www.youtube.com/oembed"
-            params = {"url": f"https://www.youtube.com/watch?v={video_id}", "format": "json"}
-            resp = httpx.get(url, params=params, timeout=10)
-            data = resp.json()
-            return {
-                "video_id": video_id,
-                "title": data.get("title", "Unknown"),
-                "channel": data.get("author_name", "Unknown"),
-                "description": "See video for details",
-                "published_at": "Unknown",
-                "tags": [],
-                "duration": "Unknown",
-                "view_count": "Unknown",
-                "url": f"https://www.youtube.com/watch?v={video_id}",
-                "thumbnail": data.get("thumbnail_url", ""),
-            }
-        except Exception as e:
-            print(f"  [YouTube] oEmbed fetch failed: {e}")
-            return None
+        metadata = _fetch_oembed_metadata(video_id)
+        if metadata:
+            return metadata
+        print("  [YouTube] oEmbed fetch failed")
+        return None
 
     try:
         url = "https://www.googleapis.com/youtube/v3/videos"
@@ -60,6 +68,10 @@ def fetch_video_metadata(video_id):
         data = resp.json()
 
         if "items" not in data or not data["items"]:
+            print("  [YouTube] Video not found via Data API — trying oEmbed...")
+            metadata = _fetch_oembed_metadata(video_id)
+            if metadata:
+                return metadata
             print("  [YouTube] Video not found")
             return None
 
@@ -87,18 +99,27 @@ def fetch_transcript(video_id):
     """Fetch transcript from YouTube using youtube-transcript-api."""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
-        from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
+        from youtube_transcript_api import TranscriptsDisabled, NoTranscriptFound
 
         try:
-            # Use list_transcripts to get available transcripts, then get preferred one
-            transcript = YouTubeTranscriptApi.get_transcript(video_id)
+            api = YouTubeTranscriptApi()
+            transcript = api.fetch(video_id, languages=["en", "en-US", "en-GB"])
 
-            # Combine all text segments
-            full_text = " ".join([t["text"] for t in transcript])
+            # Combine all text segments across snippet objects
+            parts = []
+            for snippet in transcript:
+                text = getattr(snippet, "text", "")
+                if text:
+                    parts.append(text)
+            full_text = " ".join(parts)
 
             # Clean up formatting artifacts
             full_text = re.sub(r"\[.*?\]", "", full_text)  # remove [Music] etc
             full_text = re.sub(r"\s+", " ", full_text).strip()
+
+            if not full_text:
+                print("  [YouTube] Transcript returned empty content")
+                return None
 
             # Truncate to 8000 chars
             if len(full_text) > 8000:
@@ -367,8 +388,19 @@ def process_youtube_url(url, timestamp=None):
     # Fetch metadata
     metadata = fetch_video_metadata(video_id)
     if not metadata:
-        print("  [YouTube] Could not fetch metadata")
-        return None
+        print("  [YouTube] Could not fetch metadata — using minimal fallback")
+        metadata = {
+            "video_id": video_id,
+            "title": f"YouTube Video {video_id}",
+            "channel": "unknown-channel",
+            "description": "Video metadata unavailable; captured from URL only.",
+            "published_at": "Unknown",
+            "tags": [],
+            "duration": "Unknown",
+            "view_count": "Unknown",
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "thumbnail": "",
+        }
 
     print(f"  [YouTube] Video: {metadata['title']}")
     print(f"  [YouTube] Channel: {metadata['channel']}")
