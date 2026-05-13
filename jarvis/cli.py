@@ -126,6 +126,30 @@ def note(text, source, url, force):
         )
         return
 
+    elif (text.startswith("https://") or text.startswith("http://")) and not any(
+        yt in text for yt in ["youtube.com", "youtu.be"]
+    ):
+        console.print("[dim]URL detected — routing to article fetcher...[/dim]")
+        from jarvis.article_fetcher import process_article_url
+
+        timestamp = datetime.datetime.now().isoformat()
+        result = process_article_url(text, "", timestamp)
+        if result:
+            sync_result = sync(
+                f"feat: add article note — {result['title'][:50]} [knowledge-base]"
+            )
+            try:
+                index_data = json.loads(INDEX_PATH.read_text())
+                all_notes = index_data.get("notes", [])
+                if all_notes:
+                    run_linker_for_new_notes([all_notes[-1]])
+            except Exception:
+                pass
+            console.print(f"[green]✓ Article saved: {result['folder_path']}/{result['filename']}[/green]")
+        else:
+            console.print("[red]Failed to process article.[/red]")
+        return
+
     path = capture_note(text, source=source, source_url=url)
     body = f":white_heavy_check_mark:  {text}\n\nSource: {source}  Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\nFile: {path}"
     console.print(Panel(body, title="Jarvis", border_style="green"))
@@ -331,6 +355,49 @@ def index_clean_cmd():
             title="[bold]Jarvis — Index Cleanup[/bold]",
             border_style="green",
             width=50,
+        )
+    )
+
+
+@cli.command(name="article")
+@click.argument("url")
+@click.option("--note", "personal_note", "-n", default="", help="Optional personal note or context about this article")
+def article_cmd(url, personal_note):
+    """Fetch and save an article as a structured knowledge note."""
+    from jarvis.article_fetcher import process_article_url
+
+    console.print(f"[dim]Fetching article...[/dim]")
+    console.print(f"[dim]{url}[/dim]\n")
+
+    timestamp = datetime.datetime.now().isoformat()
+    result = process_article_url(url, personal_note, timestamp)
+
+    if not result:
+        console.print("[red]Failed to process article.[/red]")
+        return
+
+    sync_result = sync(
+        f"feat: add article note — {result['title'][:50]} [knowledge-base]"
+    )
+
+    try:
+        index_data = json.loads(INDEX_PATH.read_text())
+        all_notes = index_data.get("notes", [])
+        if all_notes:
+            run_linker_for_new_notes([all_notes[-1]])
+    except Exception:
+        pass
+
+    console.print(
+        Panel(
+            f"[bold green]✓ Article captured[/bold green]\n\n"
+            f"Title  : {result['title'][:60]}\n"
+            f"Site   : {result['site']}\n"
+            f"Saved  : {result['folder_path']}/{result['filename']}\n"
+            f"GitHub : {'pushed' if sync_result.get('synced') else 'synced'}",
+            title="[bold]Jarvis — Article[/bold]",
+            border_style="green",
+            width=65,
         )
     )
 
