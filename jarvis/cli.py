@@ -28,6 +28,8 @@ from .scheduler import setup_scheduler
 from .git_sync import sync, get_status
 from .classifier import reclassify_unsorted
 from .index_cleaner import clean_index
+from .youtube_agent import process_youtube_url
+from .linker import run_linker_for_new_notes
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -92,6 +94,38 @@ def cli():
 )
 def note(text, source, url, force):
     """Capture a quick note to the inbox."""
+    # Check if text is a YouTube URL
+    if text.startswith(("https://youtube.com", "https://youtu.be", "https://www.youtube.com")):
+        console.print("[dim]YouTube URL detected — routing to YouTube agent...[/dim]\n")
+        result = process_youtube_url(text)
+        if not result:
+            console.print("[red]Failed to process YouTube video.[/red]")
+            return
+        sync_result = sync(
+            f"feat: add video-summary — {result['title'][:50]} [creator-content]"
+        )
+        # Auto-link
+        try:
+            index_data = json.loads(INDEX_PATH.read_text())
+            all_notes = index_data.get("notes", [])
+            if all_notes:
+                run_linker_for_new_notes([all_notes[-1]])
+        except Exception:
+            pass
+        console.print(
+            Panel(
+                f"[bold green]✓ Video captured[/bold green]\n\n"
+                f"Title   : {result['title'][:60]}\n"
+                f"Channel : {result['channel']}\n"
+                f"Saved   : {result['folder_path']}/{result['filename']}\n"
+                f"GitHub  : {'pushed' if sync_result.get('synced') else 'synced'}",
+                title="[bold]Jarvis — YouTube[/bold]",
+                border_style="green",
+                width=65,
+            )
+        )
+        return
+
     path = capture_note(text, source=source, source_url=url)
     body = f":white_heavy_check_mark:  {text}\n\nSource: {source}  Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\nFile: {path}"
     console.print(Panel(body, title="Jarvis", border_style="green"))
@@ -297,6 +331,48 @@ def index_clean_cmd():
             title="[bold]Jarvis — Index Cleanup[/bold]",
             border_style="green",
             width=50,
+        )
+    )
+
+
+@cli.command(name="youtube")
+@click.argument("url")
+def youtube_cmd(url):
+    """Capture a YouTube video as a structured knowledge note."""
+    console.print(f"[dim]Processing YouTube video...[/dim]")
+    console.print(f"[dim]{url}[/dim]\n")
+
+    timestamp = datetime.datetime.now().isoformat()
+    result = process_youtube_url(url, timestamp)
+
+    if not result:
+        console.print("[red]Failed to process YouTube video.[/red]")
+        return
+
+    # Git sync
+    sync_result = sync(
+        f"feat: add video-summary — {result['title'][:50]} [creator-content]"
+    )
+
+    # Auto-link
+    try:
+        index_data = json.loads(INDEX_PATH.read_text())
+        all_notes = index_data.get("notes", [])
+        if all_notes:
+            run_linker_for_new_notes([all_notes[-1]])
+    except Exception:
+        pass
+
+    console.print(
+        Panel(
+            f"[bold green]✓ Video captured[/bold green]\n\n"
+            f"Title   : {result['title'][:60]}\n"
+            f"Channel : {result['channel']}\n"
+            f"Saved   : {result['folder_path']}/{result['filename']}\n"
+            f"GitHub  : {'pushed' if sync_result.get('synced') else 'synced'}",
+            title="[bold]Jarvis — YouTube[/bold]",
+            border_style="green",
+            width=65,
         )
     )
 
