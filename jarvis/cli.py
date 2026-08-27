@@ -17,14 +17,12 @@ from .config import (
 )
 from .capture import capture_note, list_pending
 from .daily_log import (
-    append_to_log,
     finalize_log,
     generate_weekly_summary,
     get_log_path,
-    update_technologies,
 )
 from .processor import process_inbox
-from .scheduler import setup_scheduler
+from .scheduler import setup_scheduler, setup_rss_scheduler
 from .git_sync import sync, get_status
 from .classifier import reclassify_unsorted
 from .index_cleaner import clean_index
@@ -63,15 +61,6 @@ def _extract_summary_from_log(content):
     return "\n".join(lines)
 
 
-def _collect_latest_result(results, text, source, source_url):
-    for result in reversed(results):
-        if not result.get("success"):
-            continue
-        if result.get("text") == text and result.get("source") == source and result.get("source_url") == source_url:
-            return result
-    return None
-
-
 @click.group()
 def cli():
     """Jarvis CLI"""
@@ -92,7 +81,19 @@ def cli():
     default=False,
     help="Overwrite existing note if it already exists",
 )
-def note(text, source, url, force):
+@click.option(
+    "--no-push",
+    is_flag=True,
+    default=False,
+    help="Commit locally only — skip the GitHub push for instant capture (run 'jar push' later)",
+)
+@click.option(
+    "--full",
+    is_flag=True,
+    default=False,
+    help="Use the full multi-section template instead of the lean default",
+)
+def note(text, source, url, force, no_push, full):
     """Capture a quick note to the inbox."""
     # Check if text is a YouTube URL
     if text.startswith(("https://youtube.com", "https://youtu.be", "https://www.youtube.com")):
@@ -150,18 +151,15 @@ def note(text, source, url, force):
             console.print("[red]Failed to process article.[/red]")
         return
 
-    path = capture_note(text, source=source, source_url=url)
+    extra = {"lean": False} if full else None
+    path = capture_note(text, source=source, source_url=url, extra=extra)
     body = f":white_heavy_check_mark:  {text}\n\nSource: {source}  Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\nFile: {path}"
     console.print(Panel(body, title="Jarvis", border_style="green"))
     console.print("[dim]Processing...[/dim]")
-    results = process_inbox(force=force)
-    latest = _collect_latest_result(results.get("results", []), text, source, url)
-    if latest and latest.get("classification"):
-        timestamp = latest.get("timestamp")
-        target_date = datetime.date.fromisoformat(timestamp[:10]) if timestamp else datetime.date.today()
-        note_type = latest.get("note_type") or latest["classification"].get("type", "concept")
-        append_to_log(text, source, url, note_type, latest["classification"], target_date=target_date)
-        update_technologies(latest["classification"], target_date=target_date)
+    # The orchestrator (process_single_note) writes the daily log and updates
+    # technologies for each note as it is saved — it is the single source of
+    # truth for logging, so we intentionally do not append here again.
+    process_inbox(force=force, push=not no_push)
     console.print("[dim]✓ Done[/dim]")
 
 
@@ -173,15 +171,54 @@ def note(text, source, url, force):
     default=False,
     help="Overwrite existing note if it already exists",
 )
-def process(force):
+@click.option(
+    "--no-push",
+    is_flag=True,
+    default=False,
+    help="Commit locally only — skip the GitHub push (run 'jar push' later)",
+)
+def process(force, no_push):
     """Process pending notes from the inbox."""
     files = list_pending()
     if not files:
         console.print("Inbox is empty — nothing to process.")
         return
     console.print(Panel(f"Found {len(files)} pending note(s)", title="Jarvis Processing", border_style="green"))
-    result = process_inbox(force=force)
+    result = process_inbox(force=force, push=not no_push)
     console.print(f"Processed: {result['processed']} | Failed: {result['failed']}")
+
+
+@cli.command(name="push")
+def push_cmd():
+    """Push any locally-committed notes to GitHub (use after 'jar note --no-push')."""
+    from jarvis.git_sync import get_status, push_to_remote, stage_and_commit
+
+    # Sweep up anything uncommitted first, then push everything.
+    stage_and_commit("chore: jarvis batch sync")
+    try:
+        status = get_status()
+        ahead = status.get("ahead", 0)
+    except Exception:
+        ahead = 0
+
+    push_result = push_to_remote()
+    if push_result.get("pushed"):
+        console.print(
+            Panel(
+                f"Pushed {ahead if ahead else 'all pending'} local commit(s) to GitHub.",
+                title="✓ Synced to GitHub",
+                border_style="green",
+            )
+        )
+    else:
+        console.print(
+            Panel(
+                f"Push failed: {push_result.get('error', 'unknown')}\n"
+                "Commits are safe locally — try again when online.",
+                title="⚠ Push deferred",
+                border_style="yellow",
+            )
+        )
 
 
 @cli.command()
@@ -244,10 +281,16 @@ def logs():
 
 
 @cli.command()
-def schedule():
-    """Set up the midnight log finalizer task."""
-    message = setup_scheduler()
-    console.print(Panel(message, title="Jarvis — Scheduler", border_style="green" if "Failed" not in message else "red"))
+@click.option("--rss", is_flag=True, default=False, help="Also schedule the daily RSS processor")
+@click.option("--rss-time", default="08:00", help="Time of day for the RSS job (HH:MM)")
+def schedule(rss, rss_time):
+    """Set up the midnight log finalizer (and optionally the daily RSS job)."""
+    messages = [setup_scheduler()]
+    if rss:
+        messages.append(setup_rss_scheduler(rss_time))
+    body = "\n".join(messages)
+    failed = any("Failed" in m for m in messages)
+    console.print(Panel(body, title="Jarvis — Scheduler", border_style="red" if failed else "green"))
 
 
 @cli.command()
@@ -342,15 +385,33 @@ def cleanup_cmd():
 
 
 @cli.command(name="index-clean")
-def index_clean_cmd():
+@click.option("--fix-domains", is_flag=True, default=False,
+              help="Also repair domain values containing leaked AI prompt text")
+def index_clean_cmd(fix_domains):
     """Remove stale index entries where files no longer exist."""
     console.print("[dim]Scanning index for stale entries...[/dim]")
     result = clean_index()
+
+    from jarvis.index_store import dedupe_index
+
+    dedup = dedupe_index()
+    dedup_line = f"Duplicates: {dedup['removed']} collapsed\n" if dedup["removed"] else ""
+
+    domain_line = ""
+    if fix_domains:
+        console.print("[dim]Repairing malformed domain values...[/dim]")
+        from jarvis.index_cleaner import fix_domains as run_fix_domains
+
+        fixed = run_fix_domains()
+        domain_line = f"Domains  : {fixed['fixed']} repaired\n"
+
     sync_result = sync("fix: remove stale entries from index.json")
     console.print(
         Panel(
             f"Removed  : {result['removed']} stale entries\n"
+            f"{dedup_line}"
             f"Remaining: {result['remaining']} valid entries\n"
+            f"{domain_line}"
             f"GitHub   : {'pushed' if sync_result.get('synced') else 'up to date'}",
             title="[bold]Jarvis — Index Cleanup[/bold]",
             border_style="green",
@@ -538,6 +599,413 @@ def link(domain):
     )
 
 
+@cli.command(name="listen")
+@click.option("--seconds", "-s", default=0, type=int,
+              help="Record for a fixed number of seconds (0 = until you press Enter)")
+@click.option("--file", "audio_file", default=None,
+              help="Transcribe an existing audio file instead of recording")
+@click.option("--ask", "ask_mode", is_flag=True, default=False,
+              help="Treat what you say as a question and answer it from your notes")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Transcribe and show the text without capturing it")
+def listen_cmd(seconds, audio_file, ask_mode, dry_run):
+    """Speak a note (or a question) instead of typing it."""
+    from jarvis.voice import has_microphone, record_fixed, record_until, transcribe_file
+
+    if audio_file:
+        path = audio_file
+        console.print(f"[dim]Transcribing {audio_file}...[/dim]")
+    else:
+        if not has_microphone():
+            console.print("[red]No microphone detected.[/red] "
+                          "Use --file to transcribe an audio file instead.")
+            return
+        if seconds > 0:
+            console.print(f"[bold cyan]🎙  Recording {seconds}s...[/bold cyan]")
+            path = record_fixed(seconds)
+        else:
+            console.print("[bold cyan]🎙  Recording — press Enter to stop.[/bold cyan]")
+            import threading
+
+            done = threading.Event()
+
+            def _wait_for_enter():
+                try:
+                    input()
+                except Exception:
+                    pass
+                done.set()
+
+            threading.Thread(target=_wait_for_enter, daemon=True).start()
+            path = record_until(done.is_set)
+        console.print("[dim]Transcribing...[/dim]")
+
+    text = transcribe_file(path)
+    if not text:
+        console.print("[red]Could not transcribe (no speech detected, or "
+                      "Groq unavailable — run 'jar doctor').[/red]")
+        return
+
+    console.print(Panel(text, title="[bold]Heard[/bold]", border_style="cyan", width=80))
+
+    if dry_run:
+        return
+
+    if ask_mode:
+        from jarvis.retrieval import ask
+
+        result = ask(text)
+        console.print(
+            Panel(result["answer"], title="[bold]Jarvis — Answer[/bold]",
+                  border_style="green", width=88)
+        )
+        return
+
+    path_obj = capture_note(text, source="voice", source_url="")
+    console.print("[dim]Processing...[/dim]")
+    process_inbox(force=False, push=True)
+    console.print("[dim]✓ Captured[/dim]")
+
+
+@cli.command(name="wiki")
+@click.argument("topic", required=False)
+@click.option("--all", "synth_all", is_flag=True, default=False,
+              help="Synthesize every suggested cluster")
+@click.option("--min-size", default=2, type=int, help="Min notes to form a cluster")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without writing or calling AI")
+def wiki_cmd(topic, synth_all, min_size, dry_run):
+    """Synthesize scattered notes into ONE authoritative wiki page per topic."""
+    from jarvis.wiki import build_index, suggest_topics, synthesize_topic
+
+    if not topic and not synth_all:
+        clusters = suggest_topics(min_size=min_size)
+        if not clusters:
+            console.print("[dim]No clusters big enough to synthesize yet.[/dim]")
+            return
+        console.print(f"\n[bold]{len(clusters)} topic(s) worth synthesizing[/bold]")
+        console.print("[dim]Run: jar wiki \"<topic>\"[/dim]\n")
+        for c in clusters[:20]:
+            bar = "█" * min(c["count"], 12)
+            console.print(f"  [cyan]{bar:<12}[/cyan] [bold]{c['topic']}[/bold] "
+                          f"[dim]({c['count']} notes, by {c['basis']})[/dim]")
+        return
+
+    targets = ([c["topic"] for c in suggest_topics(min_size=min_size)]
+               if synth_all else [topic])
+
+    built = 0
+    for name in targets:
+        console.print(f"[dim]Synthesizing '{name}'...[/dim]")
+        result = synthesize_topic(name, dry_run=dry_run)
+        if not result["count"]:
+            console.print(f"  [yellow]No notes found for '{name}'[/yellow]")
+            continue
+        built += 1
+        tag = "AI" if result["used_ai"] else "fallback"
+        console.print(
+            f"  [green]✓[/green] {name} — merged [bold]{result['count']}[/bold] "
+            f"notes [dim]({tag})[/dim]"
+        )
+        if dry_run:
+            console.print(f"  [dim]sources: {', '.join(result['sources'][:6])}[/dim]")
+
+    if built and not dry_run:
+        index_result = build_index()
+        console.print(
+            Panel(
+                f"Synthesized : {built} topic page(s)\n"
+                f"Wiki index  : {index_result['path']}\n\n"
+                f"[dim]Your raw notes are untouched — wiki pages cite them.[/dim]",
+                title="[bold]Jarvis — Wiki[/bold]", border_style="green", width=72,
+            )
+        )
+
+
+@cli.command(name="review")
+@click.option("--limit", "-n", default=10, type=int, help="How many notes to review")
+@click.option("--domain", "-d", default=None, help="Only review one domain")
+@click.option("--list", "list_only", is_flag=True, default=False,
+              help="Just list what's due, don't run the session")
+def review_cmd(limit, domain, list_only):
+    """Resurface notes due for revision (spaced repetition)."""
+    from jarvis.review import due_notes, record_review, review_stats
+
+    due = due_notes(limit=limit, domain=domain)
+    stats = review_stats()
+
+    if not due:
+        console.print(
+            Panel(f"Nothing due for review.\n\nTracked: {stats['tracked']} notes | "
+                  f"Mastered: {stats['mastered']}",
+                  title="Jarvis — Review", border_style="green", width=60)
+        )
+        return
+
+    console.print(
+        Panel(f"{len(due)} note(s) due for review\n"
+              f"[dim]Tracked: {stats['tracked']} | Mastered: {stats['mastered']}[/dim]",
+              title="[bold]Jarvis — Review[/bold]", border_style="cyan", width=60)
+    )
+
+    if list_only:
+        for item in due:
+            overdue = f"[red]{item['overdue_days']}d overdue[/red]" if item["overdue_days"] else "[dim]due[/dim]"
+            console.print(f"  • {item['title'][:50]:<50} {overdue}  [dim]L{item['level']}[/dim]")
+        return
+
+    for index, item in enumerate(due, 1):
+        console.print(f"\n[bold cyan]{index}/{len(due)}[/bold cyan]  "
+                      f"[bold]{item['title']}[/bold] [dim]({item['domain']})[/dim]")
+        console.print(f"[dim]{item['path']}[/dim]")
+        answer = click.prompt("  Still know it? [y]es / [n]o / [s]kip / [q]uit",
+                              default="y", show_default=False)
+        answer = (answer or "y").strip().lower()[:1]
+        if answer == "q":
+            break
+        if answer == "s":
+            continue
+        record_review(item["key"], remembered=(answer == "y"))
+        console.print("  [green]✓ scheduled further out[/green]" if answer == "y"
+                      else "  [yellow]↺ reset to tomorrow[/yellow]")
+
+    console.print("\n[dim]Review session done.[/dim]")
+
+
+@cli.command(name="quiz")
+@click.option("--count", "-n", default=5, type=int, help="Number of questions")
+@click.option("--domain", "-d", default=None, help="Restrict to one domain")
+@click.option("--type", "note_type", default=None, help="Restrict to a note type (e.g. dsa)")
+def quiz_cmd(count, domain, note_type):
+    """Quiz yourself on your own notes (great before interviews)."""
+    from jarvis.review import generate_quiz
+
+    console.print("[dim]Building quiz from your notes...[/dim]\n")
+    questions = generate_quiz(count=count, domain=domain, note_type=note_type)
+
+    if not questions:
+        console.print("[dim]No notes matched — capture some first.[/dim]")
+        return
+
+    score = 0
+    for index, item in enumerate(questions, 1):
+        console.print(f"[bold cyan]Q{index}.[/bold cyan] {item['question']}")
+        click.prompt("  [press Enter to reveal]", default="", show_default=False)
+        console.print(f"  [green]Answer:[/green] {item.get('answer', '(see note)')}")
+        if item.get("source"):
+            console.print(f"  [dim]from: {item['source']}[/dim]")
+        got_it = click.prompt("  Did you get it? [y/n]", default="y", show_default=False)
+        if (got_it or "y").strip().lower().startswith("y"):
+            score += 1
+        console.print()
+
+    console.print(
+        Panel(f"Score: {score}/{len(questions)}",
+              title="Jarvis — Quiz", border_style="cyan", width=40)
+    )
+
+
+@cli.command(name="export")
+@click.option("--domain", "-d", default=None, help="Export one domain")
+@click.option("--tag", "-t", default=None, help="Export everything with a tag")
+@click.option("--type", "note_type", default=None, help="Export one note type")
+@click.option("--query", "-q", default=None, help="Export notes matching a search")
+@click.option("--limit", default=None, type=int, help="Max notes to include")
+@click.option("--title", default=None, help="Document title")
+@click.option("--output", "-o", default=None, help="Write to this path")
+@click.option("--no-toc", is_flag=True, default=False, help="Skip the table of contents")
+def export_cmd(domain, tag, note_type, query, limit, title, output, no_toc):
+    """Compile notes into ONE shareable Markdown document."""
+    from jarvis.exporter import export
+
+    if not any([domain, tag, note_type, query]):
+        console.print("[yellow]Pick at least one filter: --domain / --tag / --type / --query[/yellow]")
+        return
+
+    console.print("[dim]Building document...[/dim]")
+    result = export(domain=domain, tag=tag, note_type=note_type, query=query,
+                    limit=limit, title=title, output=output, include_toc=not no_toc)
+
+    console.print(
+        Panel(
+            f"Title : {result['title']}\n"
+            f"Notes : {result['count']}\n"
+            f"Saved : {result['path']}",
+            title="[bold]Jarvis — Export[/bold]",
+            border_style="green", width=76,
+        )
+    )
+
+
+@cli.command(name="open")
+@click.argument("query")
+def open_cmd(query):
+    """Find the best-matching note and open it in your default editor."""
+    import subprocess
+    import sys as _sys
+
+    from jarvis.retrieval import search_notes
+
+    results = search_notes(query, limit=1)
+    if not results:
+        console.print(f"[dim]No note matches '{query}'.[/dim]")
+        return
+
+    target = results[0]
+    console.print(f"[green]Opening:[/green] {target['title']} [dim]{target['path']}[/dim]")
+    try:
+        if _sys.platform.startswith("win"):
+            import os
+
+            os.startfile(target["path"])  # noqa: S606 - user-initiated
+        elif _sys.platform == "darwin":
+            subprocess.run(["open", target["path"]], check=False)
+        else:
+            subprocess.run(["xdg-open", target["path"]], check=False)
+    except Exception as exc:
+        console.print(f"[yellow]Could not open automatically: {exc}[/yellow]")
+        console.print(f"[dim]{target['path']}[/dim]")
+
+
+@cli.command(name="doctor")
+@click.option("--details", "-d", is_flag=True, default=False,
+              help="List the actual files in each category")
+@click.option("--stale-days", default=90, type=int, help="Age before a note counts as stale")
+def doctor_cmd(details, stale_days):
+    """Health-check your knowledge base and report what needs fixing."""
+    from jarvis.health import check_health, health_score, summarize
+
+    console.print("[dim]Scanning knowledge base...[/dim]\n")
+    findings = check_health(stale_days=stale_days)
+    score = health_score(findings)
+
+    colour = "green" if score >= 85 else "yellow" if score >= 60 else "red"
+    console.print(
+        Panel(
+            f"[bold {colour}]Health score: {score}/100[/bold {colour}]\n"
+            f"{findings['total_indexed']} notes indexed",
+            title="[bold]Jarvis — Doctor[/bold]",
+            border_style=colour,
+            width=60,
+        )
+    )
+
+    # AI connectivity — a deprecated model silently disables classification,
+    # summaries, and synthesis, so check it explicitly rather than discovering
+    # it weeks later through bad note titles.
+    from jarvis.ai import health as ai_health
+
+    console.print("\n[bold]AI providers[/bold]")
+    ai = ai_health()
+    for provider in ("groq", "gemini"):
+        info = ai[provider]
+        if info["ok"]:
+            console.print(f"  [green]✓[/green] {provider}: [dim]{info['model']}[/dim]")
+        else:
+            console.print(f"  [red]✗[/red] {provider}: [dim]{info['error'][:70]}[/dim]")
+    if not ai["any"]:
+        console.print("  [red]No AI provider is reachable — Jarvis is running on the "
+                      "offline keyword classifier only.[/red]")
+    console.print()
+
+    icons = {"error": "[red]✗[/red]", "warn": "[yellow]![/yellow]", "info": "[dim]·[/dim]"}
+    for severity, label, count, hint in summarize(findings):
+        if count == 0:
+            console.print(f"  [green]✓[/green] {label}: [dim]none[/dim]")
+        else:
+            console.print(f"  {icons[severity]} {label}: [bold]{count}[/bold]  [dim]→ {hint}[/dim]")
+
+    if details:
+        for key in ("missing_files", "duplicate_rows", "empty_notes",
+                    "broken_links", "untracked_files", "stale_notes"):
+            items = findings[key]
+            if not items:
+                continue
+            console.print(f"\n[bold]{key.replace('_', ' ').title()}[/bold]")
+            for item in items[:15]:
+                console.print(f"  [dim]{item}[/dim]")
+            if len(items) > 15:
+                console.print(f"  [dim]... and {len(items) - 15} more[/dim]")
+
+
+@cli.command(name="reindex")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be added without writing")
+def reindex_cmd(dry_run):
+    """Re-add notes that exist on disk but are missing from index.json."""
+    from jarvis.health import reindex
+
+    console.print("[dim]Scanning repo for unindexed notes...[/dim]")
+    result = reindex(dry_run=dry_run)
+    added = result["added"]
+
+    if not added:
+        console.print(
+            Panel(f"All {result['scanned']} notes on disk are indexed.",
+                  title="Jarvis — Reindex", border_style="green", width=60)
+        )
+        return
+
+    for item in added[:20]:
+        console.print(f"  [green]+[/green] {item['title'][:45]} [dim]{item['file']}[/dim]")
+    if len(added) > 20:
+        console.print(f"  [dim]... and {len(added) - 20} more[/dim]")
+
+    verb = "Would add" if dry_run else "Added"
+    console.print(
+        Panel(
+            f"{verb}: {len(added)} note(s)\nScanned: {result['scanned']} files on disk"
+            + ("\n\n[dim]Dry run — nothing written.[/dim]" if dry_run else ""),
+            title="Jarvis — Reindex", border_style="green", width=60,
+        )
+    )
+
+
+@cli.command(name="search")
+@click.argument("query")
+@click.option("--limit", "-n", default=10, type=int, help="Max results")
+def search_cmd(query, limit):
+    """Full-text search across your note contents (offline, instant)."""
+    from jarvis.retrieval import search_notes
+
+    results = search_notes(query, limit=limit)
+    if not results:
+        console.print(f"[dim]No notes match '{query}'.[/dim]")
+        return
+
+    console.print(f"\n[bold]{len(results)} result(s) for[/bold] [cyan]{query}[/cyan]\n")
+    for r in results:
+        bar = "█" * min(r["score"] // 3, 8)
+        console.print(
+            f"[dim]{bar:<8}[/dim] [bold]{r['title']}[/bold] "
+            f"[dim][{r['folder_path']}/{r['filename']}][/dim]"
+        )
+        console.print(f"          [dim]{r['snippet'][:150]}[/dim]\n")
+
+
+@cli.command(name="ask")
+@click.argument("question")
+def ask_cmd(question):
+    """Ask a question and get an answer synthesized from your own notes."""
+    from jarvis.retrieval import ask
+
+    console.print("[dim]Searching your notes...[/dim]")
+    result = ask(question)
+
+    source_titles = ", ".join(s["title"] for s in result["sources"][:5])
+    footer = ""
+    if result["sources"]:
+        tag = "AI" if result["used_ai"] else "search"
+        footer = f"\n\n[dim]Based on {len(result['sources'])} note(s) via {tag}: {source_titles}[/dim]"
+
+    console.print(
+        Panel(
+            result["answer"] + footer,
+            title=f"[bold]Jarvis — {question[:50]}[/bold]",
+            border_style="cyan",
+            width=88,
+        )
+    )
+
+
 @cli.command()
 @click.argument("search_term")
 def graph(search_term):
@@ -610,6 +1078,62 @@ def lc(number):
             width=70,
         )
     )
+
+
+@cli.command(name="rss")
+@click.option("--no-sync", is_flag=True, default=False, help="Do not push to GitHub after saving")
+def rss_cmd(no_sync):
+    """Fetch developer RSS feeds and save relevant items as notes."""
+    from jarvis.rss_processor import process_feeds
+
+    console.print("[dim]Running RSS processor...[/dim]")
+    summary = process_feeds(sync_git=not no_sync)
+
+    files_block = (
+        "\n".join(f"  • {f}" for f in summary["files"])
+        if summary["files"]
+        else "  (nothing new to save)"
+    )
+    console.print(
+        Panel(
+            f"Fetched : {summary['fetched']} items\n"
+            f"New     : {summary['new']} (after dedupe)\n"
+            f"Saved   : {summary['saved']} relevant note(s)\n"
+            f"{files_block}",
+            title="[bold]Jarvis — RSS[/bold]",
+            border_style="green",
+            width=64,
+        )
+    )
+
+
+@cli.command(name="serve")
+@click.option("--host", default="127.0.0.1", help="Host to bind (use 0.0.0.0 to allow LAN/phone access)")
+@click.option("--port", default=7823, type=int, help="Port to serve on")
+def serve_cmd(host, port):
+    """Start the local web dashboard + capture API (bookmarklet backend)."""
+    display_host = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
+    dashboard_url = f"http://{display_host}:{port}/dashboard"
+    console.print(
+        Panel(
+            f"[bold green]Jarvis API server starting...[/bold green]\n\n"
+            f"Dashboard : [link]{dashboard_url}[/link]\n"
+            f"Health    : http://{display_host}:{port}/health\n"
+            f"Repo      : {REPO_PATH}\n\n"
+            f"Open the dashboard, then drag the [bold]⚡ Save to Jarvis[/bold] button\n"
+            f"to your bookmarks bar to capture pages from any browser.\n\n"
+            f"[dim]Press Ctrl+C to stop.[/dim]",
+            title="[bold]Jarvis — Serve[/bold]",
+            border_style="green",
+            width=68,
+        )
+    )
+    from jarvis.api_server import run_server
+
+    try:
+        run_server(host=host, port=port)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Server stopped.[/dim]")
 
 
 @cli.command()
