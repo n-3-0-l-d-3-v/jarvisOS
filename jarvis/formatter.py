@@ -296,18 +296,133 @@ def format_article(text, classification, source, source_url, timestamp):
 """
 
 
-def format_note(text, classification, source, source_url, timestamp):
-    note_type = classification.get("type", "concept")
+# --------------------------------------------------------------------------- #
+# Lean templates
+#
+# The full templates above emit ~10 headings, most of which stay empty forever.
+# A repo audit found the median note was 66% scaffolding, which makes opening
+# your own notes feel like unfinished homework. Lean notes keep the content and
+# at most a couple of genuinely useful prompts. The wikilink placeholder is
+# always preserved because linker.py depends on that exact string.
+# --------------------------------------------------------------------------- #
 
-    if note_type == "dsa":
-        return format_dsa(text, classification, source, source_url, timestamp)
-    elif note_type == "bug":
-        return format_bug(text, classification, source, source_url, timestamp)
-    elif note_type == "snippet":
-        return format_snippet(text, classification, source, source_url, timestamp)
-    elif note_type == "video-summary":
-        return format_video(text, classification, source, source_url, timestamp)
-    elif note_type == "article":
-        return format_article(text, classification, source, source_url, timestamp)
-    else:
-        return format_concept(text, classification, source, source_url, timestamp)
+_WIKILINK_PLACEHOLDER = "<!-- [[wikilinks]] added automatically -->"
+
+
+def _lean_note(body_sections, classification, source, source_url, timestamp,
+               related_header="Related Topics"):
+    frontmatter = build_frontmatter(classification, source, source_url, timestamp)
+    title = classification.get("title", "Untitled Note")
+    parts = [frontmatter, f"\n# {title}\n"]
+    for heading, content in body_sections:
+        content = (content or "").strip()
+        if heading:
+            parts.append(f"\n## {heading}\n{content}\n" if content else f"\n## {heading}\n")
+        elif content:
+            parts.append(f"\n{content}\n")
+    parts.append(f"\n## {related_header}\n{_WIKILINK_PLACEHOLDER}\n")
+    parts.append(f"\n---\n*Captured: {timestamp} | Source: {source} | Jarvis*\n")
+    return "".join(parts)
+
+
+def format_concept_lean(text, classification, source, source_url, timestamp):
+    summary = classification.get("summary", "")
+    sections = []
+    if summary:
+        sections.append((None, summary))
+    sections.append((None, text))
+    if source_url:
+        sections.append(("Source", _source_line(source_url, "")))
+    return _lean_note(sections, classification, source, source_url, timestamp)
+
+
+def format_bug_lean(text, classification, source, source_url, timestamp):
+    return _lean_note(
+        [(None, text), ("Fix", "")],
+        classification, source, source_url, timestamp,
+        related_header="Related Issues",
+    )
+
+
+def format_snippet_lean(text, classification, source, source_url, timestamp):
+    summary = classification.get("summary", "")
+    sections = []
+    if summary:
+        sections.append((None, summary))
+    sections.append(("Code", text))
+    return _lean_note(sections, classification, source, source_url, timestamp,
+                      related_header="Related Snippets")
+
+
+def format_dsa_lean(text, classification, source, source_url, timestamp):
+    # DSA keeps a little more structure — the fields are genuinely used.
+    subdomain = classification.get("subdomain", "")
+    return _lean_note(
+        [
+            (None, text),
+            ("Pattern", subdomain),
+            ("Approach", ""),
+            ("Complexity", "| | Value |\n|---|---|\n| Time | O( ) |\n| Space | O( ) |"),
+        ],
+        classification, source, source_url, timestamp,
+        related_header="Related Patterns",
+    )
+
+
+def format_video_lean(text, classification, source, source_url, timestamp):
+    creator = classification.get("creator", "")
+    summary = classification.get("summary", "")
+    sections = []
+    if creator:
+        sections.append(("Channel", creator))
+    if source_url:
+        sections.append(("Video Link", _source_line(source_url, "")))
+    if summary:
+        sections.append(("TLDR", summary))
+    sections.append((None, text))
+    return _lean_note(sections, classification, source, source_url, timestamp)
+
+
+def format_article_lean(text, classification, source, source_url, timestamp):
+    summary = classification.get("summary", "")
+    sections = []
+    if source_url:
+        sections.append(("Source", _source_line(source_url, "")))
+    if summary:
+        sections.append(("TLDR", summary))
+    sections.append((None, text))
+    return _lean_note(sections, classification, source, source_url, timestamp)
+
+
+_FULL_DISPATCH = {
+    "dsa": format_dsa,
+    "bug": format_bug,
+    "snippet": format_snippet,
+    "video-summary": format_video,
+    "article": format_article,
+}
+
+_LEAN_DISPATCH = {
+    "dsa": format_dsa_lean,
+    "bug": format_bug_lean,
+    "snippet": format_snippet_lean,
+    "video-summary": format_video_lean,
+    "article": format_article_lean,
+}
+
+
+def format_note(text, classification, source, source_url, timestamp, lean=None):
+    """Render a note. `lean` defaults to config.LEAN_NOTES."""
+    if lean is None:
+        try:
+            from jarvis.config import LEAN_NOTES
+
+            lean = LEAN_NOTES
+        except Exception:
+            lean = True
+
+    note_type = classification.get("type", "concept")
+    table = _LEAN_DISPATCH if lean else _FULL_DISPATCH
+    default = format_concept_lean if lean else format_concept
+    renderer = table.get(note_type, default)
+    return renderer(text, classification, source, source_url, timestamp)
