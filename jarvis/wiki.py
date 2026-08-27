@@ -38,6 +38,15 @@ WIKI_LOG = WIKI_DIR / "log.md"
 MIN_CLUSTER = 2
 # Minimum search score for the free-text fallback to count as a real topic.
 MIN_FALLBACK_SCORE = 2
+
+# Workflow/administrative labels that are not subjects. A wiki page titled
+# "Review Needed" or "Unsorted" is noise — these describe a note's *status* or
+# the tool that captured it, not what it is about.
+_NON_TOPICAL = {
+    "unsorted", "review-needed", "review", "todo", "misc", "general",
+    "cli", "note", "notes", "knowledge-base", "inbox", "draft", "untitled",
+    "patterns", "concept", "dsa", "reference", "other", "tools",
+}
 # Per-source and total context budgets for the synthesis prompt.
 PER_SOURCE_CHARS = 1800
 TOTAL_BUDGET = 14000
@@ -87,7 +96,7 @@ def suggest_topics(min_size=MIN_CLUSTER):
         if not _note_path(note).exists():
             continue
         subdomain = (note.get("subdomain") or "").strip().lower()
-        if subdomain and subdomain not in {"unsorted", "general", ""}:
+        if subdomain and subdomain not in _NON_TOPICAL:
             clusters.setdefault(("subdomain", subdomain), []).append(note)
 
     # Tag-based clusters for notes whose subdomain was empty/generic.
@@ -97,20 +106,31 @@ def suggest_topics(min_size=MIN_CLUSTER):
             continue
         for tag in (note.get("tags") or [])[:3]:
             tag = str(tag).strip().lower()
-            if tag:
+            if tag and tag not in _NON_TOPICAL:
                 clusters.setdefault(("tag", tag), []).append(note)
 
+    # A topic can surface under both bases (subdomain "redis" AND tag "redis").
+    # Emitting it twice would synthesize the same page twice — wasted AI calls
+    # and a confusing suggestion list — so merge by name, keeping the union of
+    # notes and preferring the stronger (subdomain) basis.
+    merged = {}
+    for (basis, name), group in clusters.items():
+        entry = merged.get(name)
+        if entry is None:
+            merged[name] = {"topic": name, "basis": basis, "notes": list(group)}
+            continue
+        known = {id(n) for n in entry["notes"]}
+        entry["notes"].extend(n for n in group if id(n) not in known)
+        if basis == "subdomain":
+            entry["basis"] = basis
+
     results = [
-        {
-            "topic": name,
-            "basis": basis,
-            "count": len(group),
-            "notes": group,
-        }
-        for (basis, name), group in clusters.items()
-        if len(group) >= min_size
+        {"topic": e["topic"], "basis": e["basis"],
+         "count": len(e["notes"]), "notes": e["notes"]}
+        for e in merged.values()
+        if len(e["notes"]) >= min_size
     ]
-    results.sort(key=lambda c: c["count"], reverse=True)
+    results.sort(key=lambda c: (-c["count"], c["topic"]))
     return results
 
 
