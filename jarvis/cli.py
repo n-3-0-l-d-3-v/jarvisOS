@@ -599,6 +599,48 @@ def link(domain):
     )
 
 
+@cli.command(name="daily")
+@click.option("--date", "date_value", default=None, help="Briefing for a specific date (YYYY-MM-DD)")
+def daily_cmd(date_value):
+    """Your morning briefing: yesterday, what's due, and one next action."""
+    from jarvis.briefing import build_briefing
+
+    target = _parse_date_value(date_value) if date_value else None
+    b = build_briefing(target_date=target)
+
+    streak = b["streak"]
+    flame = "🔥" if streak["current"] >= 3 else ""
+    header = (
+        f"[bold]{b['date']}[/bold]   "
+        f"streak [bold cyan]{streak['current']}[/bold cyan]d {flame}  "
+        f"[dim](best {streak['longest']}d · {b['total_notes']} notes)[/dim]"
+    )
+    console.print(Panel(header, title="[bold]Jarvis — Daily[/bold]",
+                        border_style="cyan", width=76))
+
+    if b["yesterday"]:
+        console.print(f"\n[bold]Yesterday[/bold] [dim]({b['yesterday_count']} captured)[/dim]")
+        for item in b["yesterday"]:
+            console.print(f"  • {item['title'][:56]} [dim]{item['domain']}[/dim]")
+    else:
+        console.print("\n[dim]Nothing captured yesterday.[/dim]")
+
+    if b["due"]:
+        console.print(f"\n[bold]Due for review[/bold] [dim]({b['review'].get('due', 0)} total)[/dim]")
+        for item in b["due"]:
+            late = f"[red]{item['overdue_days']}d late[/red]" if item["overdue_days"] else "[dim]due[/dim]"
+            console.print(f"  • {item['title'][:48]:<48} {late}")
+
+    if b["actions"]:
+        console.print("\n[bold]Next[/bold]")
+        for action in b["actions"]:
+            console.print(f"  [cyan]→[/cyan] {action['text']}")
+
+    if b["today_count"]:
+        console.print(f"\n[dim]Already captured {b['today_count']} today.[/dim]")
+    console.print()
+
+
 @cli.command(name="listen")
 @click.option("--seconds", "-s", default=0, type=int,
               help="Record for a fixed number of seconds (0 = until you press Enter)")

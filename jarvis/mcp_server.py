@@ -322,6 +322,42 @@ def notes_due_for_review(limit: int = 10, domain: str = "") -> str:
 
 @server.tool(
     description=(
+        "The user's daily briefing: what they captured yesterday, what is due for "
+        "review, their capture streak, and suggested next actions. Use when they "
+        "ask 'what should I do today', 'catch me up', or for a morning summary."
+    )
+)
+def daily_briefing() -> str:
+    with _quiet():
+        from jarvis.briefing import build_briefing
+
+        b = build_briefing()
+
+    lines = [
+        f"Briefing for {b['date']}",
+        f"Streak: {b['streak']['current']} day(s) (best {b['streak']['longest']}) "
+        f"| {b['total_notes']} notes total | {b['today_count']} captured today",
+    ]
+    if b["yesterday"]:
+        lines.append(f"\nYesterday ({b['yesterday_count']}):")
+        lines += [f"  - {n['title']} [{n['domain']}]" for n in b["yesterday"]]
+    else:
+        lines.append("\nNothing captured yesterday.")
+    if b["due"]:
+        lines.append(f"\nDue for review ({b['review'].get('due', 0)} total):")
+        lines += [
+            f"  - {d['title']}"
+            + (f" ({d['overdue_days']}d overdue)" if d["overdue_days"] else "")
+            for d in b["due"]
+        ]
+    if b["actions"]:
+        lines.append("\nSuggested next:")
+        lines += [f"  - {a['text']}" for a in b["actions"]]
+    return "\n".join(lines)
+
+
+@server.tool(
+    description=(
         "Health check on the knowledge base: empty notes, broken links, duplicate "
         "index rows, unindexed files, stale notes. Returns a 0-100 score and what "
         "to fix."
