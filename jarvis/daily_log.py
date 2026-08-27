@@ -6,8 +6,12 @@ from pathlib import Path
 
 import warnings
 
-from jarvis.config import REPO_PATH, DAILY_LOGS_PATH, GEMINI_API_KEY, INDEX_PATH
 from jarvis.git_sync import sync
+
+
+def get_config():
+    from jarvis.config import REPO_PATH, DAILY_LOGS_PATH, GEMINI_API_KEY, INDEX_PATH
+    return REPO_PATH, DAILY_LOGS_PATH, GEMINI_API_KEY, INDEX_PATH
 
 try:
     with warnings.catch_warnings():
@@ -20,6 +24,7 @@ except Exception:
 MODEL_NAME = "gemini-2.0-flash"
 
 
+REPO_PATH, DAILY_LOGS_PATH, GEMINI_API_KEY, INDEX_PATH = get_config()
 if genai and GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
@@ -33,8 +38,11 @@ def _coerce_date(target_date=None):
 
 
 def get_log_path(target_date=None):
+    REPO_PATH, DAILY_LOGS_PATH, _, _ = get_config()
     log_date = _coerce_date(target_date)
-    return DAILY_LOGS_PATH / str(log_date.year) / f"{log_date:%m}" / f"{log_date.isoformat()}.md"
+    log_dir = DAILY_LOGS_PATH / str(log_date.year) / f"{log_date:%m}"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / f"{log_date.isoformat()}.md"
 
 
 def _template(date_iso):
@@ -70,6 +78,7 @@ def _template(date_iso):
 
 
 def ensure_log_exists(target_date=None):
+    REPO_PATH, DAILY_LOGS_PATH, _, _ = get_config()
     log_date = _coerce_date(target_date)
     log_path = get_log_path(log_date)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -303,6 +312,7 @@ def update_technologies(classification, target_date=None):
 
 
 def _load_index_notes_for_date(target_date):
+    _, _, _, INDEX_PATH = get_config()
     if not INDEX_PATH.exists():
         return []
     try:
@@ -329,6 +339,7 @@ def _summary_bullets_for_date(target_date):
 
 
 def _generate_summary_text(log_content):
+    _, _, GEMINI_API_KEY, _ = get_config()
     prompt = f"""
 You are Jarvis, an AI engineering journal assistant.
 Below is a developer's raw daily log containing their captured notes.
@@ -343,13 +354,10 @@ Daily log:
 Return only the summary text. No headers. No markdown. Just the paragraph.
 """
 
-    if not (genai and GEMINI_API_KEY):
-        return _fallback_daily_summary(log_content)
-
     try:
-        model = genai.GenerativeModel(MODEL_NAME)
-        response = model.generate_content(prompt)
-        summary_text = getattr(response, "text", "") or ""
+        from jarvis.ai import complete
+
+        summary_text = complete(prompt, max_tokens=600, temperature=0.4) or ""
         summary_text = re.sub(r"\s+", " ", summary_text).strip()
         return summary_text or _fallback_daily_summary(log_content)
     except Exception:
@@ -396,6 +404,7 @@ def get_week_logs(target_date=None):
 
 
 def generate_weekly_summary(target_date=None):
+    REPO_PATH, _, GEMINI_API_KEY, _ = get_config()
     end_date = _coerce_date(target_date)
     week_logs = get_week_logs(end_date)
     combined_logs = "\n\n".join(log["content"] for log in week_logs if log["exists"])
@@ -422,14 +431,11 @@ Logs:
 {combined_logs}
 """
 
-    if genai and GEMINI_API_KEY:
-        try:
-            model = genai.GenerativeModel(MODEL_NAME)
-            response = model.generate_content(prompt)
-            summary_text = getattr(response, "text", "") or ""
-        except Exception:
-            summary_text = ""
-    else:
+    try:
+        from jarvis.ai import complete
+
+        summary_text = complete(prompt, max_tokens=1500, temperature=0.4) or ""
+    except Exception:
         summary_text = ""
 
     if not summary_text.strip():
