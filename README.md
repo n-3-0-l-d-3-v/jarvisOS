@@ -65,6 +65,11 @@ Twelve tools are exposed: `search_notes`, `read_note`, `ask_knowledge_base`,
 Because the Claude mobile app does speech-to-text, this also gives you voice
 capture on your phone for free.
 
+### Start here each morning
+| Command | Description |
+|---------|-------------|
+| `jar daily` | Yesterday's captures, what's due for review, your streak, and one next action |
+
 ### Voice
 | Command | Description |
 |---------|-------------|
@@ -178,6 +183,13 @@ phone on the same network.
 | `rss_processor.py` | RSS feed processor (stdlib parser, Groq/keyword filter) |
 | `index_store.py` | Single source of truth for `index.json` — upsert-by-file so re-captures never duplicate rows |
 | `retrieval.py` | Full-text search + AI answers over your own notes (`jar search` / `jar ask`) |
+| `ai.py` | Central AI client — model fallback lists, timeouts, health probe |
+| `mcp_server.py` | Exposes Jarvis as MCP tools for Claude and other agents |
+| `wiki.py` | Synthesizes note clusters into authoritative topic pages |
+| `briefing.py` | Daily briefing: streak, due reviews, next action |
+| `analytics.py` | Capture timeline, domain and DSA-pattern coverage |
+| `graph_view.py` | Knowledge-graph nodes/edges for the dashboard |
+| `voice.py` | Recording + Whisper transcription for `jar listen` |
 | `health.py` | Repo health checks + `reindex` recovery of unindexed notes |
 | `review.py` | Spaced repetition + quiz generation |
 | `exporter.py` | Compiles notes into a single shareable document |
