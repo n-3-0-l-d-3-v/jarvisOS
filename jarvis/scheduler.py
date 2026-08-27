@@ -2,26 +2,27 @@ import subprocess
 import sys
 
 
-def setup_scheduler():
-    command = f'"{sys.executable}" -m jarvis.tasks finalize'
+def _create_task(task_name, task_arg, run_time):
+    """Create (or replace) a Windows Scheduled Task that runs a jarvis task."""
+    command = f'"{sys.executable}" -m jarvis.tasks {task_arg}'
     schtasks_command = [
         "schtasks",
         "/create",
         "/tn",
-        "JarvisDailyLog",
+        task_name,
         "/tr",
         command,
         "/sc",
         "daily",
         "/st",
-        "23:59",
+        run_time,
         "/f",
     ]
 
     try:
         result = subprocess.run(schtasks_command, capture_output=True, text=True, check=False)
         if result.returncode == 0:
-            message = result.stdout.strip() or "Jarvis daily log scheduler configured successfully."
+            message = result.stdout.strip() or f"Scheduled task '{task_name}' configured for {run_time} daily."
             print(message)
             return message
         error_message = result.stderr.strip() or result.stdout.strip() or "Unknown scheduler error"
@@ -31,3 +32,13 @@ def setup_scheduler():
         message = f"Failed to create scheduler: {exception}"
         print(message)
         return message
+
+
+def setup_scheduler():
+    """Daily log finalizer at 23:59."""
+    return _create_task("JarvisDailyLog", "finalize", "23:59")
+
+
+def setup_rss_scheduler(run_time="08:00"):
+    """Daily RSS feed processor (default 08:00)."""
+    return _create_task("JarvisRSS", "rss", run_time)
