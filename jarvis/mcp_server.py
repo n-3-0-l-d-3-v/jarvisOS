@@ -403,6 +403,115 @@ def export_document(
     )
 
 
+@server.tool(
+    description=(
+        "List topics with enough scattered notes to be worth merging into one "
+        "wiki page. Use to answer 'what should I consolidate', or before "
+        "calling synthesize_topic."
+    )
+)
+def suggest_wiki_topics(min_size: int = 3) -> str:
+    with _quiet():
+        from jarvis.wiki import suggest_topics
+
+        clusters = suggest_topics(min_size=min_size)
+    if not clusters:
+        return "No clusters large enough to synthesize yet."
+    return "\n".join(
+        f"- {c['topic']}: {c['count']} notes (by {c['basis']})"
+        for c in clusters[:20]
+    )
+
+
+@server.tool(
+    description=(
+        "Merge every scattered note about a topic into ONE authoritative wiki "
+        "page that cites its sources. Original notes are never modified. This "
+        "WRITES a new page to the repo — confirm the topic with the user first "
+        "if it is ambiguous."
+    )
+)
+def synthesize_topic(topic: str) -> str:
+    topic = (topic or "").strip()
+    if not topic:
+        return "No topic given."
+    with _quiet():
+        from jarvis.wiki import build_index
+        from jarvis.wiki import synthesize_topic as _synth
+
+        result = _synth(topic)
+        if result["count"]:
+            build_index()
+    if not result["count"]:
+        return f"No notes found for '{topic}'."
+    how = "AI synthesis" if result["used_ai"] else "structured fallback (AI unavailable)"
+    return (
+        f"Merged {result['count']} note(s) on '{topic}' into {result['path']} "
+        f"via {how}.\nSources: {', '.join(result['sources'][:8])}"
+    )
+
+
+@server.tool(
+    description=(
+        "Find near-identical notes that say the same thing twice. Read-only by "
+        "default — it reports what WOULD be merged. Pass apply=true only after "
+        "the user explicitly confirms, since that deletes notes (they are "
+        "archived to 00-meta/merged)."
+    )
+)
+def find_duplicates(threshold: float = 0.72, apply: bool = False) -> str:
+    with _quiet():
+        from jarvis.dedupe import dedupe
+
+        result = dedupe(threshold=threshold, apply=apply)
+    if not result["cluster_count"]:
+        return "No near-duplicate notes found."
+
+    lines = [
+        f"{result['duplicate_count']} duplicate(s) in "
+        f"{result['cluster_count']} cluster(s)"
+        + ("  [MERGED]" if apply else "  [dry run — nothing changed]")
+    ]
+    for cluster in result["clusters"]:
+        keep = cluster["keep"]
+        lines.append(
+            f"\nKeep: {keep.get('title')} "
+            f"({keep.get('folder_path')}/{keep.get('filename')})"
+        )
+        for dupe, score in zip(cluster["duplicates"], cluster["scores"]):
+            lines.append(f"  - {dupe.get('title')} ({score:.0%} similar)")
+    if not apply:
+        lines.append("\nAsk the user before merging, then call with apply=true.")
+    return "\n".join(lines)
+
+
+@server.tool(
+    description=(
+        "Learning analytics: capture timeline, notes per domain, DSA pattern "
+        "coverage and streaks. Use for 'how am I doing', interview-readiness "
+        "questions, or to spot neglected areas."
+    )
+)
+def learning_analytics(days: int = 30) -> str:
+    with _quiet():
+        from jarvis.analytics import build_analytics
+
+        a = build_analytics(days=days)
+    t = a["totals"]
+    gaps = [p["name"] for p in a["patterns"] if not p["count"]]
+    lines = [
+        f"{t['notes']} notes across {t['domains']} domains",
+        f"Streak: {t['streak']} day(s) (best {t['longest_streak']}); active "
+        f"{t['active_last_n']} of the last {t['window_days']} days",
+        f"DSA patterns covered: {t['patterns_covered']}/{t['patterns_total']}",
+    ]
+    if gaps:
+        lines.append(f"Uncovered patterns: {', '.join(gaps)}")
+    lines.append("\nTop domains:")
+    lines += [f"  - {d['name']}: {d['count']}" for d in a["domains"][:8]]
+    return "\n".join(lines)
+
+
 def main():
     server.run(transport="stdio")
 

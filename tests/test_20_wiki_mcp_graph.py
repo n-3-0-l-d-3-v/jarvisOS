@@ -197,8 +197,18 @@ def test_mcp_registers_expected_tools():
     names = {t.name for t in tools}
     for expected in ("search_notes", "read_note", "ask_knowledge_base",
                      "capture_note", "capture_url", "knowledge_stats",
-                     "find_related", "knowledge_health", "export_document"):
+                     "find_related", "knowledge_health", "export_document",
+                     "daily_briefing", "suggest_wiki_topics", "synthesize_topic",
+                     "find_duplicates", "learning_analytics"):
         assert expected in names, f"MCP tool missing: {expected}"
+
+
+def test_mcp_duplicate_tool_defaults_to_read_only(seeded):
+    """find_duplicates must never delete unless explicitly asked."""
+    from jarvis.mcp_server import find_duplicates
+
+    out = find_duplicates()
+    assert "dry run" in out.lower() or "no near-duplicate" in out.lower()
 
 
 def test_mcp_tools_all_have_descriptions():
