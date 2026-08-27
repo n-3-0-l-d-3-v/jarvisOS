@@ -105,6 +105,39 @@ def validate_folder_path(folder_path):
     return folder_path
 
 
+def normalize_domain(value, default="knowledge-base"):
+    """Clean a domain/subdomain value coming back from an LLM.
+
+    Models sometimes echo the prompt scaffolding into the value itself, e.g.
+    'primary domain: open-source', 'specific technology: redis', or the whole
+    option list 'dsa|frontend|backend'. Those strings then leak into index.json
+    and show up as bogus facets in the dashboard and wiki clustering.
+
+    Domains and subdomains are always plain slugs, so a leading "label:" prefix
+    is never legitimate here and is safe to strip generically.
+    """
+    if not value:
+        return default
+    text = str(value).strip().strip("\"'` ")
+    # Drop a leading descriptive label the model copied from the prompt,
+    # e.g. "primary domain: x", "specific technology: x", "subdomain: x".
+    text = re.sub(r"^[a-z][a-z\s/-]{0,40}:\s*", "", text, flags=re.IGNORECASE)
+    # If a pipe-separated option list came back, take the first option.
+    text = text.split("|")[0]
+    # Same for a comma-separated option list echoed from "one of: a, b, c".
+    if text.count(",") >= 2:
+        text = text.split(",")[0]
+    text = text.strip().strip("\"'` ").lower()
+    return text or default
+
+
+def normalize_subdomain(value):
+    """Subdomains use the same cleaning but may legitimately be empty."""
+    if not value or not str(value).strip():
+        return ""
+    return normalize_domain(value, default="")
+
+
 def detect_dsa_pattern(text):
     lower_text = (text or "").lower()
 
@@ -309,6 +342,16 @@ def detect_note_type(text, source):
     if lower_source == "leetcode":
         return "dsa"
 
+    # Detect DSA from the text itself, not just the --source flag, so
+    # `jar note "LC-76 minimum window substring"` still routes to the DSA
+    # pipeline. This must run before the bug/snippet checks: a DSA note that
+    # includes its solution code would otherwise be misfiled as a snippet.
+    if re.search(r"\b(?:lc|leetcode)[-\s]?\d+\b", lower_text):
+        return "dsa"
+
+    if detect_dsa_pattern(text):
+        return "dsa"
+
     if any(
         key in lower_text
         for key in [
@@ -449,34 +492,11 @@ def classify_with_groq(text, source, source_url, pre_type, dsa_pattern):
     try:
         prompt = build_classification_prompt(text, source, source_url, pre_type, dsa_pattern)
 
-        with httpx.Client(timeout=15.0) as client:
-            response = client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "llama-3.3-70b-versatile",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.1,
-                    "max_tokens": 500,
-                },
-            )
+        from jarvis.ai import complete_json, last_error
 
-        print(f"  [Jarvis] Groq status: {response.status_code}")
-
-        if response.status_code != 200:
-            print(f"  [Jarvis] Groq error body: {response.text[:300]}")
-            return None
-
-        data = response.json()
-        response_text = data["choices"][0]["message"]["content"]
-        print(f"  [Jarvis] Groq raw response: {response_text[:300]}")
-
-        result = extract_json(response_text)
+        result = complete_json(prompt, max_tokens=700, temperature=0.1, prefer="groq")
         if result is None:
-            print("  [Jarvis] Groq response could not be parsed as JSON")
+            print(f"  [Jarvis] Groq classification unavailable ({last_error()['groq']})")
             return None
 
         if result.get("folder_path"):
@@ -944,21 +964,27 @@ def classify_note(text, source, source_url):
     dsa_pattern = detect_dsa_pattern(text)
     prompt = build_classification_prompt(text, source, source_url, pre_type, dsa_pattern)
 
-    if GEMINI_API_KEY:
+    # Tier 1+2: the central AI client already walks Groq/Gemini and every model
+    # in each list, so one call here replaces the old two-tier duplication and
+    # cannot be killed by a single model deprecation.
+    if GEMINI_API_KEY or GROQ_API_KEY:
         try:
-            model = genai.GenerativeModel(MODEL_NAME)
-            response = model.generate_content(prompt)
-            raw_text = getattr(response, "text", "") or ""
-            cleaned = clean_json_response(raw_text)
-            parsed = json.loads(cleaned)
-            normalized = _normalize_classification(parsed, pre_type, dsa_pattern, text, source)
-            normalized.setdefault("confidence", 0.85)
-            normalized["classifier_used"] = "gemini"
-            if normalized.get("folder_path"):
-                normalized["folder_path"] = validate_folder_path(normalized["folder_path"])
-            return normalized
-        except Exception:
-            print("  [Jarvis] Gemini quota hit -- trying Groq...")
+            from jarvis.ai import complete_json, last_error
+
+            parsed = complete_json(prompt, max_tokens=700, temperature=0.1)
+            if parsed is not None:
+                normalized = _normalize_classification(
+                    parsed, pre_type, dsa_pattern, text, source)
+                normalized.setdefault("confidence", 0.85)
+                normalized["classifier_used"] = "ai"
+                if normalized.get("folder_path"):
+                    normalized["folder_path"] = validate_folder_path(
+                        normalized["folder_path"])
+                return normalized
+            print(f"  [Jarvis] AI classifiers unavailable ({last_error()}) "
+                  f"-- falling back to keywords")
+        except Exception as exc:
+            print(f"  [Jarvis] AI classification error: {exc}")
 
     if GROQ_API_KEY:
         groq_result = classify_with_groq(text, source, source_url, pre_type, dsa_pattern)
