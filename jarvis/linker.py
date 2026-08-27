@@ -27,9 +27,15 @@ def find_related_notes(note_entry, all_notes, max_results=5):
     note_type = note_entry.get("type", "")
     note_date = note_entry.get("date", "")
 
-    results = []
+    self_key = (note_entry.get("folder_path", ""), note_entry.get("filename", ""))
+    results = {}  # keyed by target file so duplicate index rows can't double-count
     for other in all_notes:
-        if other.get("id") == note_entry.get("id"):
+        # Identity is the FILE, not the id. Ids are not reliably unique —
+        # `reindex` derives them from filename stems, so distinct notes can
+        # share one — and skipping on id silently drops real links between
+        # genuinely different notes.
+        other_key = (other.get("folder_path", ""), other.get("filename", ""))
+        if other_key == self_key:
             continue
 
         score = 0
@@ -57,18 +63,19 @@ def find_related_notes(note_entry, all_notes, max_results=5):
                 pass
 
         if score >= 2:
-            results.append(
-                {
-                    "title": other.get("title", "Untitled"),
-                    "domain": other.get("domain", ""),
-                    "folder_path": other.get("folder_path", ""),
-                    "filename": other.get("filename", ""),
-                    "score": score,
-                }
-            )
+            existing = results.get(other_key)
+            if existing and existing["score"] >= score:
+                continue
+            results[other_key] = {
+                "title": other.get("title", "Untitled"),
+                "domain": other.get("domain", ""),
+                "folder_path": other.get("folder_path", ""),
+                "filename": other.get("filename", ""),
+                "score": score,
+            }
 
-    results.sort(key=lambda item: item.get("score", 0), reverse=True)
-    return results[:max_results]
+    ranked = sorted(results.values(), key=lambda item: item.get("score", 0), reverse=True)
+    return ranked[:max_results]
 
 
 def _date_to_ordinal(date_parts):
@@ -77,12 +84,20 @@ def _date_to_ordinal(date_parts):
 
 
 def build_wikilinks(related_notes):
+    """Render related notes as wikilinks, one per target file.
+
+    Deduped because a duplicated index row (or two notes sharing a filename)
+    would otherwise emit the same link several times in Related Topics.
+    """
     links = []
+    seen = set()
     for note in related_notes:
         filename_no_ext = note.get("filename", "").replace(".md", "")
         display = note.get("title", "Untitled")
-        if filename_no_ext:
-            links.append(f"- [[{filename_no_ext}|{display}]]")
+        if not filename_no_ext or filename_no_ext in seen:
+            continue
+        seen.add(filename_no_ext)
+        links.append(f"- [[{filename_no_ext}|{display}]]")
     return "\n".join(links)
 
 
