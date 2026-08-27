@@ -43,6 +43,7 @@ def clean_index():
     # Update index
     index_data["notes"] = valid
     index_data["total_notes"] = len(valid)
+
     
     # Write back to disk
     try:
@@ -52,3 +53,51 @@ def clean_index():
         return {"removed": 0, "remaining": len(valid), "error": f"Write failed: {str(e)}"}
     
     return {"removed": len(stale), "remaining": len(valid)}
+
+
+def fix_domains():
+    """Repair index entries whose `domain` contains leaked LLM prompt text.
+
+    Older notes captured before the agents normalised their output can carry
+    values like "primary domain: open-source", which then show up as bogus
+    rows in the dashboard's domain breakdown.
+
+    Returns:
+        dict: {"fixed": count, "changes": [(old, new), ...]}
+    """
+    from jarvis.classifier import normalize_domain, normalize_subdomain
+
+    try:
+        with open(INDEX_PATH, encoding="utf-8") as f:
+            index_data = json.load(f)
+    except Exception as e:
+        return {"fixed": 0, "changes": [], "error": str(e)}
+
+    changes = []
+    for note in index_data.get("notes", []):
+        old = note.get("domain", "")
+        new = normalize_domain(old, "knowledge-base") if old else old
+        if new != old:
+            note["domain"] = new
+            changes.append((old, new))
+
+        old_sub = note.get("subdomain", "")
+        new_sub = normalize_subdomain(old_sub)
+        if new_sub != old_sub:
+            note["subdomain"] = new_sub
+            changes.append((old_sub, new_sub))
+
+    if not changes:
+        print("  All domain values are already clean.")
+        return {"fixed": 0, "changes": []}
+
+    for old, new in changes:
+        print(f"  Fixing domain: {old!r} -> {new!r}")
+
+    try:
+        with open(INDEX_PATH, "w", encoding="utf-8") as f:
+            json.dump(index_data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return {"fixed": 0, "changes": changes, "error": f"Write failed: {str(e)}"}
+
+    return {"fixed": len(changes), "changes": changes}
