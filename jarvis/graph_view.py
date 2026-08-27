@@ -19,12 +19,28 @@ MAX_NODES = 220
 MIN_EDGE_SCORE = 3
 MAX_EDGES_PER_NODE = 4
 
-# Stable palette per domain family so colours don't shuffle between loads.
+# Categorical palette: domain is an IDENTITY encoding, so hues must be
+# distinguishable under colour-vision deficiency, not merely pretty. These eight
+# steps are validated against this dashboard's surface (#1c1c2e) — all pass the
+# lightness band, chroma floor, CVD separation and 3:1 contrast checks. The
+# previous ad-hoc palette failed the lightness band (colours were far too light
+# for a dark surface).
+#
+# Eight is the ceiling: a generated 9th hue is indistinguishable from an
+# existing one under CVD, so the tail folds into a neutral "Other" instead.
 _PALETTE = [
-    "#00d4ff", "#7a5cff", "#3ddc84", "#ffb703", "#ff6b6b",
-    "#b388ff", "#4dd0e1", "#f06292", "#aed581", "#ffd54f",
-    "#4fc3f7", "#ff8a65", "#9575cd", "#81c784", "#e57373",
+    "#3987e5",  # blue
+    "#d95926",  # orange
+    "#199e70",  # aqua
+    "#c98500",  # yellow
+    "#d55181",  # magenta
+    "#008300",  # green
+    "#9085e9",  # violet
+    "#e66767",  # red
 ]
+_OTHER_COLOUR = "#8a8a99"  # neutral for the folded tail
+_OTHER_LABEL = "other"
+MAX_DOMAIN_COLOURS = len(_PALETTE)
 
 
 def _unique_notes():
@@ -50,22 +66,38 @@ def build_graph(domain=None, max_nodes=MAX_NODES):
     notes.sort(key=_richness, reverse=True)
     notes = notes[:max_nodes]
 
-    domains = sorted({(n.get("domain") or "other") for n in notes})
-    colour_of = {d: _PALETTE[i % len(_PALETTE)] for i, d in enumerate(domains)}
+    # Colour the largest domains; everything past the palette ceiling folds into
+    # a single neutral "other" so no two domains share a hue.
+    counts = {}
+    for note in notes:
+        key = note.get("domain") or _OTHER_LABEL
+        counts[key] = counts.get(key, 0) + 1
+    ranked = sorted(counts, key=lambda d: (-counts[d], d))
+    coloured = ranked[:MAX_DOMAIN_COLOURS]
+    colour_of = {d: _PALETTE[i] for i, d in enumerate(coloured)}
+
+    def _colour(domain):
+        return colour_of.get(domain, _OTHER_COLOUR)
+
+    def _label(domain):
+        return domain if domain in colour_of else _OTHER_LABEL
+
+    domains = list(coloured) + ([_OTHER_LABEL] if len(ranked) > len(coloured) else [])
 
     index_of = {}
     nodes = []
     for i, note in enumerate(notes):
         key = (note.get("folder_path", ""), note.get("filename", ""))
         index_of[key] = i
-        note_domain = note.get("domain") or "other"
+        note_domain = note.get("domain") or _OTHER_LABEL
         nodes.append({
             "id": i,
             "title": note.get("title", "Untitled"),
             "domain": note_domain,
+            "legend": _label(note_domain),
             "type": note.get("type", "concept"),
             "path": f"{key[0]}/{key[1]}",
-            "colour": colour_of[note_domain],
+            "colour": _colour(note_domain),
             "degree": 0,
         })
 
@@ -94,6 +126,6 @@ def build_graph(domain=None, max_nodes=MAX_NODES):
     return {
         "nodes": nodes,
         "edges": edges,
-        "domains": [{"domain": d, "colour": colour_of[d]} for d in domains],
+        "domains": [{"domain": d, "colour": _colour(d)} for d in domains],
         "stats": {"node_count": len(nodes), "edge_count": len(edges)},
     }
