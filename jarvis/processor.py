@@ -71,8 +71,8 @@ def _update_index(note_id, classification, timestamp, filename, source, enriched
     _save_index(index_data)
 
 
-def process_inbox(force=False):
-    return process_inbox_orchestrated(force=force)
+def process_inbox(force=False, push=True):
+    return process_inbox_orchestrated(force=force, push=push)
 
 
 # Legacy sequential processing — replaced by orchestrator

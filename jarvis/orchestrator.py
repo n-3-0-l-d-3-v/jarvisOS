@@ -8,8 +8,10 @@ from pathlib import Path
 
 from jarvis.classifier import classify_note
 from jarvis.config import INDEX_PATH, REPO_PATH
+from jarvis.daily_log import append_to_log, update_technologies
 from jarvis.dsa_agent import analyze_dsa_note, build_dsa_note
 from jarvis.formatter import format_note
+from jarvis.index_store import upsert_note
 from jarvis.leetcode_fetcher import enrich_note_with_leetcode
 from jarvis.linker import run_linker, run_linker_for_new_notes, should_run_full_link
 
@@ -21,28 +23,7 @@ def _slugify_title(title: str) -> str:
     return slug or "untitled-note"
 
 
-def _load_index():
-    try:
-        if INDEX_PATH.exists():
-            with open(INDEX_PATH, encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    data.setdefault("total_notes", 0)
-                    data.setdefault("notes", [])
-                    return data
-    except Exception:
-        pass
-    return {"total_notes": 0, "notes": []}
-
-
-def _save_index(index_data):
-    INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(INDEX_PATH, "w", encoding="utf-8") as f:
-        json.dump(index_data, f, ensure_ascii=False, indent=2)
-
-
 def _update_index(note_id, classification, timestamp, filename, source, enriched_data=None):
-    index_data = _load_index()
     note_date = timestamp[:10] if timestamp else date.today().isoformat()
     entry = {
         "id": note_id,
@@ -69,9 +50,9 @@ def _update_index(note_id, classification, timestamp, filename, source, enriched
     if "lc_companies" in classification:
         entry["lc_companies"] = classification.get("lc_companies", [])
 
-    index_data["notes"].append(entry)
-    index_data["total_notes"] = int(index_data.get("total_notes", 0)) + 1
-    _save_index(index_data)
+    # upsert (not append): re-capturing the same file updates its row instead
+    # of adding a duplicate. See jarvis/index_store.py.
+    upsert_note(entry)
 
 
 def run_parallel_dsa_enrichment(text, classification):
@@ -159,11 +140,17 @@ def process_single_note(inbox_file_path: Path, force=False):
                     classification["lc_companies"] = leetcode_data["companies"]
 
         if is_dsa and enriched_data:
+            # The DSA agent fills every section with real content, so it is
+            # never scaffolding — always use the rich builder here.
             markdown_content = build_dsa_note(
                 text, classification, enriched_data, timestamp, leetcode_data
             )
         else:
-            markdown_content = format_note(text, classification, source, source_url, timestamp)
+            # `jar note --full` sets extra.lean = False on the captured payload.
+            lean = payload.get("extra", {}).get("lean")
+            markdown_content = format_note(
+                text, classification, source, source_url, timestamp, lean=lean
+            )
 
         folder = REPO_PATH / classification["folder_path"]
         folder.mkdir(parents=True, exist_ok=True)
@@ -217,6 +204,15 @@ def process_single_note(inbox_file_path: Path, force=False):
         filepath.write_text(markdown_content, encoding="utf-8")
         print(f"  Saved: {classification['folder_path']}/{filename}")
 
+        append_to_log(
+            text=text,
+            source=source,
+            source_url=source_url,
+            note_type=classification.get("type", "concept"),
+            classification=classification
+        )
+        update_technologies(classification)
+
         _update_index(note_id, classification, timestamp, filename, source, enriched_data)
 
         print(f"  [Orchestrator] Total: {time.time() - total_start:.1f}s")
@@ -244,9 +240,16 @@ def process_single_note(inbox_file_path: Path, force=False):
         }
 
 
-def process_inbox_orchestrated(force=False):
+def process_inbox_orchestrated(force=False, push=True):
+    """Process every pending inbox file.
+
+    Efficiency: each note is committed locally inside the loop, but the network
+    push happens ONCE at the very end (after linking) instead of once per note.
+    Set push=False for an instant, fully-offline capture — the commits stay
+    local and `jar push` (or the next default run) ships them together.
+    """
     from jarvis.capture import list_pending, mark_processed, mark_failed
-    from jarvis.git_sync import sync, build_commit_message
+    from jarvis.git_sync import stage_and_commit, push_to_remote, build_commit_message
 
     pending = list_pending()
     if not pending:
@@ -255,6 +258,7 @@ def process_inbox_orchestrated(force=False):
     processed = 0
     failed = 0
     results = []
+    committed_any = False
 
     for inbox_file in pending:
         result = process_single_note(inbox_file, force=force)
@@ -263,9 +267,9 @@ def process_inbox_orchestrated(force=False):
             processed += 1
             classification = result.get("classification") or {}
             msg = build_commit_message(classification, result.get("text", ""))
-            sync_result = sync(msg)
-            if sync_result.get("synced"):
-                print(f"  Pushed to GitHub [{sync_result.get('commit_sha', '')}]")
+            commit_result = stage_and_commit(msg)
+            if commit_result.get("committed"):
+                committed_any = True
             mark_processed(inbox_file)
         else:
             if result.get("error") == "already_exists" and not result.get("already_processed"):
@@ -297,4 +301,19 @@ def process_inbox_orchestrated(force=False):
             run_linker(verbose=False)
             print("  [Linker] Full link pass complete")
 
-    return {"processed": processed, "failed": failed, "results": results}
+        # Commit any wikilink edits the linker made, so they ship in this batch.
+        link_commit = stage_and_commit("chore: update wikilinks")
+        if link_commit.get("committed"):
+            committed_any = True
+
+    # Single network round-trip for the whole batch.
+    if push and committed_any:
+        push_result = push_to_remote()
+        if push_result.get("pushed"):
+            print("  Pushed batch to GitHub")
+        else:
+            print(f"  Commits saved locally; push deferred ({push_result.get('error', 'no remote')})")
+    elif committed_any:
+        print("  Committed locally (push skipped — run 'jar push' to sync)")
+
+    return {"processed": processed, "failed": failed, "results": results, "pushed": push and committed_any}
