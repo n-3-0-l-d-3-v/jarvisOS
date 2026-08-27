@@ -227,7 +227,7 @@ Transcript excerpt: {context}
 Return this exact JSON:
 {{
   "tldr": "2-3 sentence summary of what this video covers",
-  "domain": "primary domain: dsa|frontend|backend|devops|cloud|ai-ml|system-design|databases|security|programming|tools|career",
+  "domain": "exactly one of: dsa, frontend, backend, devops, cloud, ai-ml, system-design, databases, security, programming, tools, career",
   "topics": ["list", "of", "4-6", "main", "topics", "covered"],
   "technologies": ["technologies", "frameworks", "tools", "mentioned"],
   "key_concepts": [
@@ -242,27 +242,18 @@ Return this exact JSON:
 }}"""
 
     try:
-        resp = httpx.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={
-                "model": "llama-3.3-70b-versatile",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.2,
-                "max_tokens": 1000,
-            },
-            timeout=20,
-        )
+        from jarvis.ai import complete_json, last_error
 
-        if resp.status_code != 200:
-            print(f"  [YouTube] Groq error {resp.status_code}")
+        result = complete_json(prompt, max_tokens=1400, temperature=0.2)
+        if result is None:
+            print(f"  [YouTube] AI summary unavailable ({last_error()})")
             return None
 
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"]
-        result = extract_json(content)
-
         if result:
+            # Guard against the model echoing prompt text into the domain value.
+            from jarvis.classifier import normalize_domain
+
+            result["domain"] = normalize_domain(result.get("domain"), "creator-content")
             print("  [YouTube] AI summary generated")
             return result
         else:
@@ -443,14 +434,10 @@ def process_youtube_url(url, timestamp=None):
     filepath = folder / filename
     filepath.write_text(markdown, encoding="utf-8")
 
-    # Update index
-    try:
-        with open(INDEX_PATH, encoding="utf-8") as f:
-            index_data = json.load(f)
-    except Exception:
-        index_data = {"notes": [], "total_notes": 0}
+    # Update index (upsert so re-capturing a video updates its row)
+    from jarvis.index_store import upsert_note
 
-    new_entry = {
+    upsert_note({
         "id": str(uuid4())[:8],
         "title": metadata["title"],
         "domain": summary.get("domain", "creator-content") if summary else "creator-content",
@@ -461,16 +448,11 @@ def process_youtube_url(url, timestamp=None):
         "tags": summary.get("tags", []) if summary else [],
         "type": "video-summary",
         "source": "youtube",
+        "source_url": metadata["url"],
         "creator": creator_folder,
         "confidence": 0.9 if summary else 0.5,
         "classifier_used": "youtube-agent",
-    }
-
-    index_data["notes"].append(new_entry)
-    index_data["total_notes"] = len(index_data["notes"])
-
-    with open(INDEX_PATH, "w", encoding="utf-8") as f:
-        json.dump(index_data, f, indent=2, ensure_ascii=False)
+    })
 
     return {
         "success": True,

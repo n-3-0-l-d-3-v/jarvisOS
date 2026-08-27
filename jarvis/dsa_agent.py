@@ -89,39 +89,16 @@ Official LeetCode data:
         prompt = prompt + lc_context
 
     try:
-        with httpx.Client(timeout=20.0) as client:
-            response = client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "llama-3.3-70b-versatile",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.1,
-                    "max_tokens": 800,
-                },
-            )
+        from jarvis.ai import complete_json, last_error
 
-        print(f"  [Jarvis] DSA Agent (Groq) status: {response.status_code}")
-
-        if response.status_code != 200:
-            print(f"  [Jarvis] DSA Agent error: {response.text[:200]}")
-            return None
-
-        data = response.json()
-        content = data["choices"][0]["message"]["content"]
-        print(f"  [Jarvis] DSA Agent response: {content[:200]}")
-
-        parsed = extract_json(content)
+        parsed = complete_json(prompt, max_tokens=1000, temperature=0.1)
         if parsed is None:
-            print("  [Jarvis] DSA Agent: could not parse response")
+            print(f"  [Jarvis] DSA Agent: no usable response ({last_error()})")
             return None
-
+        print(f"  [Jarvis] DSA Agent: enriched pattern={parsed.get('pattern')}")
         return parsed
-    except Exception:
-        print("  [Jarvis] DSA Agent: could not parse response")
+    except Exception as exc:
+        print(f"  [Jarvis] DSA Agent failed: {exc}")
         return None
 
 

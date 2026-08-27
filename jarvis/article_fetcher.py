@@ -128,7 +128,7 @@ Content excerpt: {content[:3000]}
 
 Return this exact JSON:
 {{
-  "domain": "primary domain: dsa|frontend|backend|devops|cloud|ai-ml|system-design|databases|security|programming|tools|career|research|open-source",
+  "domain": "exactly one of: dsa, frontend, backend, devops, cloud, ai-ml, system-design, databases, security, programming, tools, career, research, open-source",
   "subdomain": "specific technology or topic like redis docker react etc",
   "type": "article",
   "title": "clean article title max 10 words",
@@ -149,43 +149,21 @@ Return this exact JSON:
 """
 
     try:
-        with httpx.Client(timeout=20.0) as client:
-            response = client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-                json={
-                    "model": "llama-3.3-70b-versatile",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.1,
-                    "max_tokens": 800,
-                },
-                timeout=20.0,
-            )
+        from jarvis.ai import complete_json, last_error
 
-        print(f"  [Article] Groq status: {response.status_code}")
-
-        if response.status_code != 200:
-            print(f"  [Article] Groq error body: {response.text[:300]}")
-            return None
-
-        data = response.json()
-        response_text = data["choices"][0]["message"]["content"]
-        print(f"  [Article] Groq raw response: {response_text[:300]}")
-
-        result = extract_json(response_text)
+        result = complete_json(prompt, max_tokens=1000, temperature=0.1)
         if result is None:
-            print("  [Article] Groq response could not be parsed as JSON")
+            print(f"  [Article] AI classification unavailable ({last_error()})")
             return None
 
+        # Guard against the model echoing prompt text into the domain value.
+        from jarvis.classifier import normalize_domain, normalize_subdomain
+
+        result["domain"] = normalize_domain(result.get("domain"))
+        result["subdomain"] = normalize_subdomain(result.get("subdomain"))
         return result
-    except httpx.TimeoutException:
-        print("  [Article] Groq request timed out")
-        return None
-    except httpx.RequestError as exception:
-        print(f"  [Article] Groq connection error: {exception}")
-        return None
     except Exception as exception:
-        print(f"  [Article] Groq unexpected error: {exception}")
+        print(f"  [Article] AI classification error: {exception}")
         return None
 
 
@@ -305,18 +283,9 @@ def process_article_url(url, manual_note="", timestamp=None):
 
         filepath.write_text(note_markdown, encoding="utf-8")
 
-        try:
-            with open(INDEX_PATH, encoding="utf-8") as f:
-                index_data = json.load(f)
-        except Exception:
-            index_data = {"notes": [], "total_notes": 0}
+        from jarvis.index_store import upsert_note
 
-        if not isinstance(index_data, dict):
-            index_data = {"notes": [], "total_notes": 0}
-
-        index_data.setdefault("notes", [])
-
-        new_entry = {
+        upsert_note({
             "id": str(uuid.uuid4())[:8],
             "title": title,
             "domain": classification["domain"] if classification else "knowledge-base",
@@ -331,13 +300,7 @@ def process_article_url(url, manual_note="", timestamp=None):
             "site": metadata["site"],
             "confidence": classification["confidence"] if classification else 0.5,
             "classifier_used": "article-agent",
-        }
-
-        index_data["notes"].append(new_entry)
-        index_data["total_notes"] = len(index_data["notes"])
-
-        with open(INDEX_PATH, "w", encoding="utf-8") as f:
-            json.dump(index_data, f, indent=2, ensure_ascii=False)
+        })
 
         return {
             "success": True,
