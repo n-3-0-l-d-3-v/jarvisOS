@@ -26,6 +26,7 @@ This module fixes the class of bug, not just the instance:
 import json
 import re
 import threading
+import time
 import warnings
 
 from jarvis.config import (
@@ -43,6 +44,7 @@ _last_error = {"gemini": "", "groq": ""}
 
 GEMINI_TIMEOUT = 45
 GROQ_TIMEOUT = 60
+RETRY_BACKOFF = 2.0  # seconds, multiplied by the attempt number
 
 # Errors that mean "this model will never work" — skip to the next candidate
 # immediately instead of burning the timeout budget on it.
@@ -165,18 +167,29 @@ def _try_groq(prompt, max_tokens, temperature):
 # --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
-def complete(prompt, max_tokens=1200, temperature=0.2, prefer=None):
+def complete(prompt, max_tokens=1200, temperature=0.2, prefer=None, retries=2):
     """Return model text, or None if every provider/model failed.
 
-    prefer: "groq" to try Groq first (it is faster for short structured jobs).
+    prefer:  "groq" to try Groq first (faster for short structured jobs).
+    retries: extra passes over the provider list when everything failed.
+
+    The retry matters more than it looks. Free tiers rate-limit under bursts —
+    synthesizing eight wiki pages back to back tripped it — and without a retry
+    a momentary 429 silently produced a degraded, non-AI page with no error
+    surfaced anywhere. Backoff is short because a genuinely dead model has
+    already been ruled out by _is_fatal before we get here.
     """
     primary = (prefer or AI_PRIMARY or "groq").lower()
     order = ["groq", "gemini"] if primary == "groq" else ["gemini", "groq"]
-    for provider in order:
-        fn = _try_gemini if provider == "gemini" else _try_groq
-        result = fn(prompt, max_tokens, temperature)
-        if result:
-            return result
+
+    for attempt in range(retries + 1):
+        for provider in order:
+            fn = _try_gemini if provider == "gemini" else _try_groq
+            result = fn(prompt, max_tokens, temperature)
+            if result:
+                return result
+        if attempt < retries:
+            time.sleep(RETRY_BACKOFF * (attempt + 1))
     return None
 
 
