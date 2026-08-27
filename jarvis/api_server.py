@@ -145,6 +145,13 @@ def api_stats():
     return compute_stats()
 
 
+@app.get("/api/analytics")
+def api_analytics(days: int = 30):
+    from jarvis.analytics import build_analytics
+
+    return build_analytics(days=days)
+
+
 @app.get("/api/graph")
 def api_graph(domain: str = "", max_nodes: int = 220):
     from jarvis.graph_view import build_graph
@@ -491,6 +498,27 @@ _DASHBOARD_HTML = r"""<!doctype html>
   </div>
 
   <div class="panel" style="margin-bottom:22px">
+    <h2>📈 Learning Activity</h2>
+    <div id="kpis" style="display:flex;gap:26px;flex-wrap:wrap;margin-bottom:16px"></div>
+    <div style="color:var(--muted);font-size:12px;margin-bottom:4px">
+      Notes captured per day &middot; last 30 days
+    </div>
+    <div id="timeline" style="position:relative;height:132px"></div>
+    <div class="grid" style="margin-top:18px">
+      <div>
+        <div style="color:var(--muted);font-size:12px;margin-bottom:6px">Notes by domain</div>
+        <div id="dombars"></div>
+      </div>
+      <div>
+        <div style="color:var(--muted);font-size:12px;margin-bottom:6px">
+          DSA pattern coverage <span id="patcov"></span>
+        </div>
+        <div id="patbars"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-bottom:22px">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
       <h2 style="margin:0">🕸 Knowledge Graph</h2>
       <div style="display:flex;gap:8px;align-items:center">
@@ -583,6 +611,108 @@ _DASHBOARD_HTML = r"""<!doctype html>
   document.getElementById('askbtn').onclick=ask;
   q.addEventListener('keydown',function(e){if(e.key==='Enter'){search();}});
   window.__jarvisSearch=function(v){q.value=v;search();};
+})();
+
+/* ---- Learning analytics -------------------------------------------------
+   Every series here is single-series magnitude, so one hue (no categorical
+   palette) and no legend — the section labels say what is plotted.
+   Mark specs: bars capped at 24px with a 4px rounded data-end square at the
+   baseline, 2px surface gaps between neighbours, hairline recessive gridlines,
+   values in text tokens (never the data colour), hover tooltips throughout. */
+(function(){
+  var SERIES='#00d4ff', MUTED='#9aa2b2', GAP=2, MAXBAR=24;
+  function esc(s){return String(s==null?'':s).replace(/[<>&]/g,function(c){
+    return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];});}
+
+  function tip(host){
+    var el=document.createElement('div');
+    el.style.cssText='position:absolute;pointer-events:none;opacity:0;transition:opacity .12s;'
+      +'background:#0a0a14;color:#e6e6e6;border:1px solid var(--border);border-radius:6px;'
+      +'padding:5px 9px;font-size:12px;white-space:nowrap;z-index:5';
+    host.appendChild(el);
+    return {
+      show:function(html,x,y){el.innerHTML=html;el.style.opacity='1';
+        el.style.left=Math.max(0,x-el.offsetWidth/2)+'px';el.style.top=(y-34)+'px';},
+      hide:function(){el.style.opacity='0';}
+    };
+  }
+
+  function timeline(host,rows){
+    host.innerHTML='';
+    var H=132, PAD_B=18, PAD_T=8, plot=H-PAD_B-PAD_T;
+    var max=Math.max.apply(null,rows.map(function(r){return r.count;}).concat([1]));
+    var t=tip(host);
+    var wrap=document.createElement('div');
+    wrap.style.cssText='display:flex;align-items:flex-end;gap:'+GAP+'px;height:'+H+'px;'
+      +'border-bottom:1px solid var(--border);box-sizing:border-box;padding-bottom:'+PAD_B+'px';
+    rows.forEach(function(r){
+      var h=r.count?Math.max(3,Math.round(r.count/max*plot)):1;
+      var b=document.createElement('div');
+      b.style.cssText='flex:1;max-width:'+MAXBAR+'px;height:'+h+'px;'
+        +'background:'+(r.count?SERIES:'var(--border)')+';'
+        +'border-radius:4px 4px 0 0;cursor:default';
+      b.addEventListener('mouseenter',function(){
+        var rb=b.getBoundingClientRect(), rh=host.getBoundingClientRect();
+        t.show('<b>'+r.count+'</b> note'+(r.count===1?'':'s')+' &middot; '+esc(r.label),
+               rb.left-rh.left+rb.width/2, rb.top-rh.top);
+      });
+      b.addEventListener('mouseleave',t.hide);
+      wrap.appendChild(b);
+    });
+    host.appendChild(wrap);
+    /* Label only the ends — a date on every bar is unreadable. */
+    var ax=document.createElement('div');
+    ax.style.cssText='display:flex;justify-content:space-between;color:'+MUTED+';font-size:11px;margin-top:2px';
+    ax.innerHTML='<span>'+esc(rows[0]?rows[0].label:'')+'</span>'
+                +'<span>'+esc(rows.length?rows[rows.length-1].label:'')+'</span>';
+    host.appendChild(ax);
+  }
+
+  function hbars(host,rows,unit){
+    host.innerHTML='';
+    var max=Math.max.apply(null,rows.map(function(r){return r.count;}).concat([1]));
+    rows.forEach(function(r){
+      var row=document.createElement('div');
+      row.style.cssText='display:flex;align-items:center;gap:8px;margin:5px 0;font-size:12px';
+      var pct=r.count?Math.max(2,Math.round(r.count/max*100)):0;
+      row.innerHTML=
+        '<span style="width:112px;color:var(--text);white-space:nowrap;overflow:hidden;'
+        +'text-overflow:ellipsis" title="'+esc(r.name)+'">'+esc(r.name)+'</span>'
+        +'<span style="flex:1;height:10px;background:var(--panel2);border-radius:3px;overflow:hidden">'
+        +'<span style="display:block;height:100%;width:'+pct+'%;'
+        +'background:'+(r.count?SERIES:'transparent')+';border-radius:0 4px 4px 0"></span></span>'
+        +'<span style="width:26px;text-align:right;color:'+(r.count?'var(--text)':MUTED)+';'
+        +'font-variant-numeric:tabular-nums">'+r.count+'</span>';
+      row.title=r.name+': '+r.count+' '+(unit||'notes');
+      host.appendChild(row);
+    });
+  }
+
+  function kpis(host,t){
+    host.innerHTML='';
+    [['Total notes',t.notes],
+     ['Day streak',t.streak],
+     ['Active days /'+t.window_days,t.active_last_n],
+     ['DSA patterns',t.patterns_covered+'/'+t.patterns_total]
+    ].forEach(function(p){
+      var d=document.createElement('div');
+      d.innerHTML='<div style="font-size:26px;font-weight:700;color:var(--text);line-height:1">'
+        +p[1]+'</div><div style="color:'+MUTED+';font-size:11px;text-transform:uppercase;'
+        +'letter-spacing:.6px;margin-top:5px">'+esc(p[0])+'</div>';
+      host.appendChild(d);
+    });
+  }
+
+  fetch('/api/analytics').then(function(r){return r.json();}).then(function(d){
+    kpis(document.getElementById('kpis'),d.totals);
+    timeline(document.getElementById('timeline'),d.timeline);
+    hbars(document.getElementById('dombars'),d.domains);
+    hbars(document.getElementById('patbars'),d.patterns,'problems');
+    document.getElementById('patcov').textContent=
+      '('+d.totals.patterns_covered+' of '+d.totals.patterns_total+' covered)';
+  }).catch(function(){
+    document.getElementById('kpis').innerHTML='<span class="empty">Analytics unavailable.</span>';
+  });
 })();
 
 /* ---- Knowledge graph: force-directed layout on canvas, no libraries ---- */
