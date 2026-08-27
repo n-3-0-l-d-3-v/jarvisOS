@@ -599,6 +599,59 @@ def link(domain):
     )
 
 
+@cli.command(name="dedupe")
+@click.option("--threshold", "-t", default=0.72, type=float,
+              help="Similarity needed to count as a duplicate (0-1)")
+@click.option("--apply", "apply_changes", is_flag=True, default=False,
+              help="Actually merge. Without this, nothing is changed.")
+@click.option("--no-archive", is_flag=True, default=False,
+              help="Delete merged notes outright instead of archiving them")
+def dedupe_cmd(threshold, apply_changes, no_archive):
+    """Find near-identical notes and merge them (dry run unless --apply)."""
+    from jarvis.dedupe import dedupe
+
+    console.print("[dim]Comparing note contents...[/dim]")
+    result = dedupe(threshold=threshold, apply=apply_changes,
+                    archive=not no_archive)
+
+    if not result["cluster_count"]:
+        console.print(
+            Panel("No near-duplicate notes found.",
+                  title="Jarvis — Dedupe", border_style="green", width=60)
+        )
+        return
+
+    for cluster in result["clusters"]:
+        keep = cluster["keep"]
+        console.print(
+            f"\n[green]KEEP[/green]  [bold]{keep.get('title', '?')[:52]}[/bold] "
+            f"[dim]{keep.get('folder_path')}/{keep.get('filename')}[/dim]"
+        )
+        for dupe, score in zip(cluster["duplicates"], cluster["scores"]):
+            verb = "merged" if apply_changes else "would merge"
+            console.print(
+                f"  [yellow]{verb}[/yellow] {dupe.get('title', '?')[:46]:<46} "
+                f"[dim]{score:.0%} similar[/dim]"
+            )
+
+    if apply_changes:
+        where = "deleted" if no_archive else "archived to 00-meta/merged/"
+        body = (f"Merged   : {result['duplicate_count']} note(s)\n"
+                f"Clusters : {result['cluster_count']}\n"
+                f"Originals: {where}\n\n"
+                f"[dim]Run 'jar link' to refresh wikilinks.[/dim]")
+        style = "green"
+    else:
+        body = (f"Found    : {result['duplicate_count']} duplicate(s) in "
+                f"{result['cluster_count']} cluster(s)\n\n"
+                f"[bold]Nothing was changed.[/bold]\n"
+                f"[dim]Re-run with --apply to merge.[/dim]")
+        style = "yellow"
+
+    console.print(Panel(body, title="[bold]Jarvis — Dedupe[/bold]",
+                        border_style=style, width=64))
+
+
 @cli.command(name="daily")
 @click.option("--date", "date_value", default=None, help="Briefing for a specific date (YYYY-MM-DD)")
 def daily_cmd(date_value):
