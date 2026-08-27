@@ -175,6 +175,33 @@ def test_reindex_skips_already_indexed(sandbox, write_index):
     assert not any(a["file"].endswith("known.md") for a in result["added"])
 
 
+def test_placeholder_is_not_a_broken_link(sandbox, write_index):
+    """`<!-- [[wikilinks]] added automatically -->` is a template placeholder."""
+    _write(sandbox, "08-databases", "tpl.md",
+           "---\ntitle: T\n---\n# T\n\nreal content here that is long enough to "
+           "avoid tripping the empty-note detector on this file.\n"
+           "## Related Topics\n<!-- [[wikilinks]] added automatically -->\n")
+    write_index([{"id": "1", "title": "T", "folder_path": "08-databases",
+                  "filename": "tpl.md", "date": "2026-07-01"}])
+    findings = H.check_health()
+    assert not any(b["target"] == "wikilinks" for b in findings["broken_links"])
+
+
+def test_wiki_infrastructure_is_not_untracked(sandbox, write_index):
+    """wiki/index.md and wiki/log.md are generated, not notes."""
+    _write(sandbox, "wiki", "index.md", "# Wiki Index\n")
+    _write(sandbox, "wiki", "log.md", "# Wiki Log\n")
+    write_index([])
+    files = [u["file"] for u in H.check_health()["untracked_files"]]
+    assert not any(f.endswith(("index.md", "log.md")) for f in files)
+
+
+def test_reindex_skips_wiki_infrastructure(sandbox, clean_index):
+    _write(sandbox, "wiki", "index.md", "# Wiki Index\n")
+    result = H.reindex()
+    assert not any("index.md" in a["file"] for a in result["added"])
+
+
 def test_reindex_ignores_daily_logs_and_inbox(sandbox, clean_index):
     (sandbox / "daily-logs" / "2026" / "07").mkdir(parents=True, exist_ok=True)
     (sandbox / "daily-logs" / "2026" / "07" / "2026-07-01.md").write_text(

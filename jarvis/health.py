@@ -24,6 +24,11 @@ _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]")
 _EMPTY_CONTENT_CHARS = 80
 _STALE_DAYS = 90
 
+# Generated or structural markdown that is not a knowledge note: README files
+# and the wiki's own index/log. Counting these as untracked notes produced
+# false "unindexed file" reports, and reindexing them would pollute index.json.
+_NON_NOTE_FILES = {"readme.md", "index.md", "log.md"}
+
 
 def _note_path(note):
     return REPO_PATH / note.get("folder_path", "") / note.get("filename", "")
@@ -115,7 +120,11 @@ def check_health(stale_days=_STALE_DAYS):
             findings["empty_notes"].append(
                 {"file": label, "title": title, "chars": len(content)})
 
-        links = _WIKILINK_RE.findall(raw)
+        # Extract links from the content only. The unfilled template carries
+        # `<!-- [[wikilinks]] added automatically -->`, and reading links out of
+        # the raw text counted that placeholder as a broken link to a note
+        # called "wikilinks" — 15 phantom failures on the live repo.
+        links = _WIKILINK_RE.findall(_PLACEHOLDER_RE.sub(" ", raw))
         if not links:
             findings["orphan_notes"].append({"file": label, "title": title})
         for target in links:
@@ -134,7 +143,7 @@ def check_health(stale_days=_STALE_DAYS):
     for md in REPO_PATH.rglob("*.md"):
         if any(part in skip_dirs for part in md.parts):
             continue
-        if md.name.lower() in {"readme.md"}:
+        if md.name.lower() in _NON_NOTE_FILES:
             continue
         if str(md.resolve()).lower() not in indexed_paths:
             findings["untracked_files"].append(
@@ -227,7 +236,9 @@ def reindex(dry_run=False):
     for md in sorted(REPO_PATH.rglob("*.md")):
         if any(part in skip_dirs for part in md.parts):
             continue
-        if md.name.lower() == "readme.md":
+        # Same exclusions as check_health, so reindex never adds generated
+        # infrastructure (wiki/index.md, wiki/log.md) to the note index.
+        if md.name.lower() in _NON_NOTE_FILES:
             continue
         scanned += 1
 
