@@ -42,3 +42,13 @@ def setup_scheduler():
 def setup_rss_scheduler(run_time="08:00"):
     """Daily RSS feed processor (default 08:00)."""
     return _create_task("JarvisRSS", "rss", run_time)
+
+
+def setup_curator_scheduler(run_time="03:00"):
+    """Autonomous maintenance cycle (default 03:00).
+
+    Runs in the small hours because a cycle can make several AI calls and
+    rewrite wiki pages; there is no reason for that to compete with you
+    actually using the machine.
+    """
+    return _create_task("JarvisCurator", "curate", run_time)

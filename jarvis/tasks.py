@@ -23,14 +23,35 @@ def _run_rss():
     )
 
 
+def _run_curate():
+    """The external clock for the curator.
+
+    Scheduled rather than agent-initiated on purpose: a maintenance rule that
+    exists is not a maintenance rule that runs. Only SAFE actions execute here;
+    anything destructive is journalled for the human.
+    """
+    from jarvis.curator import run_cycle
+
+    result = run_cycle(dry_run=False)
+    done = sum(1 for e in result["entries"] if e["done"])
+    deferred = len(result["entries"]) - done
+    print(
+        f"Curate: cycle {result['cycles']}, {done} action(s) applied, "
+        f"{deferred} deferred, health "
+        f"{result['score_before']} -> {result['score_after']}"
+    )
+
+
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else ""
     if command == "finalize":
         _run_finalize()
     elif command == "rss":
         _run_rss()
+    elif command == "curate":
+        _run_curate()
     else:
-        print("Usage: python -m jarvis.tasks [finalize|rss]")
+        print("Usage: python -m jarvis.tasks [finalize|rss|curate]")
 
 
 if __name__ == "__main__":

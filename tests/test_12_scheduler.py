@@ -90,3 +90,27 @@ def test_tasks_shows_usage_for_unknown_command(monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["tasks", "bogus"])
     T.main()
     assert "Usage" in capsys.readouterr().out
+
+
+def test_curator_task_scheduled_at_night(monkeypatch):
+    """A cycle makes AI calls and rewrites pages; keep it off peak hours."""
+    captured = _capture_cmd(monkeypatch)
+    S.setup_curator_scheduler()
+    cmd = captured["cmd"]
+    assert "JarvisCurator" in cmd
+    assert "03:00" in cmd
+    assert any("jarvis.tasks curate" in str(part) for part in cmd)
+
+
+def test_tasks_routes_curate(monkeypatch, capsys):
+    import jarvis.curator as CUR
+    monkeypatch.setattr("sys.argv", ["tasks", "curate"])
+    monkeypatch.setattr(
+        CUR, "run_cycle",
+        lambda dry_run=False: {"entries": [{"done": True}, {"done": False}],
+                               "cycles": 3, "score_before": 80,
+                               "score_after": 90, "next": "x"},
+        raising=False)
+    T.main()
+    out = capsys.readouterr().out
+    assert "cycle 3" in out and "1 action(s) applied" in out

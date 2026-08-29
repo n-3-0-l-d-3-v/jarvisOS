@@ -283,11 +283,18 @@ def logs():
 @cli.command()
 @click.option("--rss", is_flag=True, default=False, help="Also schedule the daily RSS processor")
 @click.option("--rss-time", default="08:00", help="Time of day for the RSS job (HH:MM)")
-def schedule(rss, rss_time):
-    """Set up the midnight log finalizer (and optionally the daily RSS job)."""
+@click.option("--curate", "curate", is_flag=True, default=False,
+              help="Also schedule the nightly autonomous maintenance cycle")
+@click.option("--curate-time", default="03:00", help="Time of day for the curator (HH:MM)")
+def schedule(rss, rss_time, curate, curate_time):
+    """Set up the midnight log finalizer (and optionally RSS + curator jobs)."""
     messages = [setup_scheduler()]
     if rss:
         messages.append(setup_rss_scheduler(rss_time))
+    if curate:
+        from jarvis.scheduler import setup_curator_scheduler
+
+        messages.append(setup_curator_scheduler(curate_time))
     body = "\n".join(messages)
     failed = any("Failed" in m for m in messages)
     console.print(Panel(body, title="Jarvis — Scheduler", border_style="red" if failed else "green"))
@@ -597,6 +604,63 @@ def link(domain):
             width=50,
         )
     )
+
+
+@cli.command(name="curate")
+@click.option("--apply", "apply_changes", is_flag=True, default=False,
+              help="Actually run the safe maintenance actions (default: propose only)")
+@click.option("--max-actions", default=8, type=int, help="Cap actions per cycle")
+def curate_cmd(apply_changes, max_actions):
+    """Run one autonomous maintenance cycle: observe, plan, act, journal."""
+    from jarvis.curator import REVIEW, run_cycle
+
+    console.print("[dim]Observing knowledge base...[/dim]")
+    result = run_cycle(dry_run=not apply_changes, max_actions=max_actions)
+
+    if not result["entries"]:
+        console.print(
+            Panel("Nothing to maintain — the base is in good shape.",
+                  title="Jarvis — Curator", border_style="green", width=64)
+        )
+        return
+
+    console.print()
+    for entry in result["entries"]:
+        if entry["tier"] == REVIEW:
+            icon, colour = "!", "yellow"
+        elif entry["done"]:
+            icon, colour = "✓", "green"
+        else:
+            icon, colour = "·", "dim"
+        console.print(
+            f"  [{colour}]{icon}[/{colour}] [bold]{entry['action']}[/bold] "
+            f"— {entry['detail']}"
+        )
+        console.print(f"      [dim]{entry.get('result', '')}[/dim]")
+
+    review = [e for e in result["entries"] if e["tier"] == REVIEW]
+    delta = result["score_after"] - result["score_before"]
+    arrow = f" ({delta:+d})" if delta else ""
+
+    if apply_changes:
+        body = (
+            f"Cycle    : {result['cycles']}\n"
+            f"Health   : {result['score_before']} → {result['score_after']}/100{arrow}\n"
+            f"Deferred : {len(review)} action(s) need your approval\n"
+            f"Next     : {result['next']}"
+        )
+        style = "green"
+    else:
+        body = (
+            f"Health   : {result['score_before']}/100\n"
+            f"Proposed : {len(result['entries'])} action(s)\n\n"
+            f"[bold]Nothing was changed.[/bold]\n"
+            f"[dim]Re-run with --apply to perform the safe ones.[/dim]"
+        )
+        style = "yellow"
+
+    console.print(Panel(body, title="[bold]Jarvis — Curator[/bold]",
+                        border_style=style, width=68))
 
 
 @cli.command(name="dedupe")

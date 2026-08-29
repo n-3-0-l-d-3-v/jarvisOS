@@ -512,6 +512,44 @@ def learning_analytics(days: int = 30) -> str:
     return "\n".join(lines)
 
 
+@server.tool(
+    description=(
+        "Run one autonomous maintenance cycle over the knowledge base: repair "
+        "the index, relink notes, and synthesize topic pages. Read-only unless "
+        "apply=true. Destructive work (deleting duplicate notes) is NEVER "
+        "performed here — it is reported for the user to approve separately. "
+        "Use for 'tidy up my notes' or 'run maintenance'."
+    )
+)
+def curate_knowledge_base(apply: bool = False) -> str:
+    with _quiet():
+        from jarvis.curator import REVIEW, run_cycle
+
+        result = run_cycle(dry_run=not apply)
+
+    if not result["entries"]:
+        return "Nothing to maintain — the knowledge base is in good shape."
+
+    lines = []
+    for entry in result["entries"]:
+        if entry["tier"] == REVIEW:
+            state = "NEEDS YOUR APPROVAL"
+        elif entry["done"]:
+            state = "done"
+        else:
+            state = "proposed"
+        lines.append(f"- [{state}] {entry['action']}: {entry['detail']}"
+                     f" -> {entry.get('result', '')}")
+
+    header = (
+        f"Cycle {result['cycles']} — health "
+        f"{result['score_before']} -> {result['score_after']}/100"
+        if apply else
+        f"Dry run — health {result['score_before']}/100, nothing changed"
+    )
+    return f"{header}\n" + "\n".join(lines) + f"\n\nNext: {result['next']}"
+
+
 def main():
     server.run(transport="stdio")
 
