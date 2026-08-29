@@ -110,9 +110,29 @@ process.
 | `jar export --domain databases` | Compile a domain into ONE Markdown handbook with a table of contents |
 | `jar export --tag redis --title "Redis Notes"` | Export by tag, type (`--type dsa`), or search (`--query "..."`) |
 
+### Let it maintain itself
+| Command | Description |
+|---------|-------------|
+| `jar curate` | One autonomous cycle: observe → plan → act → journal (dry run) |
+| `jar curate --apply` | Perform the **safe** actions: relink, reindex, repair the index, synthesize topic pages |
+| `jar schedule --curate` | Run a cycle nightly at 03:00, unattended |
+
+The curator has two tiers and the distinction is deliberate:
+
+- **SAFE** — additive or repairing. Runs unattended.
+- **REVIEW** — destructive or judgement-heavy. **Never** auto-runs; it is
+  proposed in the report and written to `00-meta/curator-log.md` for you.
+
+Deleting notes is permanently REVIEW. An unattended loop that can silently
+delete your knowledge is a liability, not a feature.
+
+Each cycle appends to an append-only journal and records the next directive, so
+the loop picks up where the last one stopped.
+
 ### Maintenance
 | Command | Description |
 |---------|-------------|
+| `jar dedupe` | Find near-identical notes by content (dry run; `--apply` merges, archiving originals) |
 | `jar doctor` | Health-check the repo: empty notes, broken links, duplicates, stale notes, untracked files. Gives a 0-100 score |
 | `jar doctor --details` | List the actual offending files |
 | `jar reindex` | Re-add notes that exist on disk but fell out of `index.json` (they're invisible to search until you do) |
@@ -190,6 +210,8 @@ phone on the same network.
 | `analytics.py` | Capture timeline, domain and DSA-pattern coverage |
 | `graph_view.py` | Knowledge-graph nodes/edges for the dashboard |
 | `voice.py` | Recording + Whisper transcription for `jar listen` |
+| `curator.py` | Autonomous observe/plan/act/journal maintenance loop |
+| `dedupe.py` | Content-based near-duplicate detection and merging |
 | `health.py` | Repo health checks + `reindex` recovery of unindexed notes |
 | `review.py` | Spaced repetition + quiz generation |
 | `exporter.py` | Compiles notes into a single shareable document |
