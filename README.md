@@ -23,13 +23,18 @@ Then copy `.env.example` to `.env` and fill in your values:
 | Variable | Purpose |
 |----------|---------|
 | `JARVIS_REPO_PATH` | Absolute path to your `devNote` knowledge repo |
-| `GEMINI_API_KEY` | Primary classifier (Gemini 2.0 Flash) |
-| `GROQ_API_KEY` | Fallback classifier + DSA/YouTube/article/RSS agents |
+| `GEMINI_API_KEY` | AI provider (fallback; model list in `config.py`) |
+| `GROQ_API_KEY` | Primary AI provider + Whisper voice transcription |
 | `YOUTUBE_API_KEY` | Richer YouTube metadata (optional; falls back to oEmbed) |
 | `DISCORD_BOT_TOKEN` / `DISCORD_GUILD_ID` / `DISCORD_CHANNEL_ID` | Mobile capture via Discord (optional) |
 
-The classifier degrades gracefully: **Gemini → Groq → offline keywords**, so
+The AI layer degrades gracefully: **Groq → Gemini → offline keywords**, so
 Jarvis still works with no keys (lower quality classification).
+
+Model names live only in `jarvis/config.py`, as ordered *lists*. Providers
+retire models without warning — `gemini-2.0-flash` and `llama-3.3-70b-versatile`
+both started 404ing mid-2026 — so a dead model is skipped rather than silently
+killing the whole AI layer. `jar doctor` reports which providers actually work.
 
 ## Commands
 
@@ -58,9 +63,12 @@ claude mcp add --transport stdio -s user jarvis -- python -m jarvis.mcp_server
 Then: *"What do I know about Redis persistence?"* · *"Save this: Postgres MVCC
 keeps old row versions for concurrent reads"* · *"Build me a DSA handbook."*
 
-Twelve tools are exposed: `search_notes`, `read_note`, `ask_knowledge_base`,
-`find_related`, `capture_note`, `capture_url`, `knowledge_stats`, `list_recent`,
-`get_daily_log`, `notes_due_for_review`, `knowledge_health`, `export_document`.
+Eighteen tools are exposed, covering retrieval (`search_notes`, `read_note`,
+`ask_knowledge_base`, `find_related`), capture (`capture_note`, `capture_url`),
+overview (`knowledge_stats`, `list_recent`, `get_daily_log`, `daily_briefing`,
+`learning_analytics`), and maintenance (`notes_due_for_review`,
+`knowledge_health`, `export_document`, `suggest_wiki_topics`,
+`synthesize_topic`, `find_duplicates`, `curate_knowledge_base`).
 
 Because the Claude mobile app does speech-to-text, this also gives you voice
 capture on your phone for free.
@@ -147,7 +155,7 @@ the loop picks up where the last one stopped.
 | `jar finalize` | AI-generate the day's narrative summary |
 | `jar weekly` | AI-generate a weekly review from the last 7 logs |
 | `jar logs` | List all logs grouped by month |
-| `jar schedule [--rss]` | Set up Windows midnight finalize (and optional daily RSS) |
+| `jar schedule [--rss] [--curate]` | Set up Windows midnight finalize, daily RSS, nightly curator |
 
 ### Knowledge base
 | Command | Description |
